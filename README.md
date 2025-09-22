@@ -60,7 +60,7 @@ from deph import isolate
 from my_model import train_model
 
 # 1. Isolate the target function to get the composed code and a report.
-code, warnings, report = isolate([train_model])
+code, report = isolate([train_model])
 
 # 2. Print the results.
 print("--- ISOLATED SOURCE CODE ---")
