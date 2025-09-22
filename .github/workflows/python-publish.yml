@@ -11,6 +11,10 @@ name: Upload Python Package
 on:
   release:
     types: [published]
+  workflow_dispatch:          # 수동 실행 버튼
+  push:
+    tags:
+      - "v*"                  # v0.1.2 같은 태그 push 시
 
 permissions:
   contents: read
@@ -68,3 +72,10 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/
+
