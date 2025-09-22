@@ -107,7 +107,7 @@ class Isolator:
         import_lines = self._collect_import_lines(report.get("imports", {}))
         if import_lines:
             chunks.append("\n".join(import_lines))
-        report['imports'] = _extract_package(report)
+        report['requirements'] = _extract_package(report)
 
         # 2) Module variables
         var_lines = self._collect_vars_lines(report.get("vars", {}))
@@ -148,13 +148,13 @@ class Isolator:
             warn_line = f"# WARNINGS: {', '.join(unbound)}\n"
             
         # ---- Requirements from report['imports'] ----
-        imports = report.get("imports", {}) or {}
+        requirements = report.get("requirements", {}) or {}
         
-        if on_pypi := imports.get("on_pypi", []) or []:
+        if on_pypi := requirements.get("on_pypi", []) or []:
             on_pypi = [i.package_name for i in on_pypi]
         req_line = _format_pip_install(on_pypi)
         
-        if unknown := imports.get("unknown", []) or []:
+        if unknown := requirements.get("unknown", []) or []:
             unknown = [i.package_name for i in unknown]
         unknown_line = f"# Unresolvable imports: {', '.join(unknown)}\n" if unknown else ""
 
