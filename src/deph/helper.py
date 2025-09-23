@@ -4,7 +4,7 @@ import requests
 import importlib.util
 import sysconfig
 from pathlib import Path
-from importlib.metadata import distributions, PackagePath
+from importlib.metadata import Distribution, distributions
 from typing import Dict, Set, Optional
 from pathlib import Path
 from types import ModuleType
@@ -15,17 +15,46 @@ __all__ = [
     "is_on_pypi",
     "is_stdlib",
     "packages_distributions",
+    "module_classifier",
     "PACKAGE_DISTRIBUTIONS"
 ]
     
 
 def is_stdlib(pkg: str) -> bool:
+    """
+    Checks if a given module name is part of the Python standard library.
+
+    This function relies on `sys.stdlib_module_names` (available in Python 3.10+).
+    For earlier versions, it may not be available.
+
+    Args:
+        pkg: The name of the module to check (e.g., "os", "math").
+
+    Returns:
+        True if the module is part of the standard library, False otherwise.
+    """
     return pkg in sys.stdlib_module_names
 
 
 def is_on_pypi(pkg: str) -> bool:
-    r = requests.get(f"https://pypi.org/pypi/{pkg}/json")
-    return r.status_code == 200
+    """
+    Checks if a package exists on the Python Package Index (PyPI).
+
+    This function sends a GET request to the PyPI JSON API for the given package.
+
+    Args:
+        pkg: The name of the package to check (e.g., "numpy", "requests").
+
+    Returns:
+        True if the package exists on PyPI (HTTP 200 OK), False otherwise.
+        Returns False on network errors (e.g., timeout, connection error).
+    """
+    try:
+        r = requests.get(f"https://pypi.org/pypi/{pkg}/json", timeout=5)
+        r.raise_for_status()
+        return True
+    except (requests.exceptions.RequestException, requests.exceptions.HTTPError):
+        return False
 
 
 def packages_distributions() -> Dict[str, list]:
@@ -34,55 +63,59 @@ def packages_distributions() -> Dict[str, list]:
 
     Returns
     -------
-    Dict[str, list]
+    Dict[str, str]
         A dictionary where keys are the discovered top-level module names (e.g., "numpy")
-        and values are the corresponding distribution names (e.g., "numpy"). The value is
-        a list to align with `importlib.metadata.packages_distributions` but typically
-        contains one name.
+        and values are the corresponding distribution names (e.g., "numpy").
     """
     mapping = dict()
     for dist in distributions():
-        mods: Set[str] = set()
-        if (top_level_txt := dist.read_text('top_level.txt')):
-            mods.update(line.strip() for line in top_level_txt.splitlines() if line.strip())
-        if not mods and dist.files:
-            for fpath in dist.files:
-                if mod := fpath.parts[0]:
-                    if mod.endswith('.py'):
-                        mods.add(mod.split('.')[0].replace('-', '_'))
-                    if '.' not in mod and not mod.startswith('_'):
-                        mods.add(mod)
-                    if mod.endswith('.pth'):
-                        mods.update(_find_modules(fpath))
-        for mod in list(mods):
+        for mod in _get_toplevel_modules_for_dist(dist):
             mapping[mod] = dist.name
     return mapping
 
 
 # internal
-def _classify_module(path: Path):
-    if path.is_dir():
-        if any([f for f in path.iterdir() if '__init__.py' in f.name]):
-            return path.name
-    elif path.is_file():
-        if path.name.endswith('.py'):
-            return path.name.split('.')[0].replace('-', '_')
-    return None
+def _get_toplevel_modules_for_dist(dist: "Distribution") -> Set[str]:
+    """
+    Extracts top-level importable module names from a distribution.
 
+    It tries to find modules from 'top_level.txt', and if that's not available,
+    it infers them from the list of files in the distribution's metadata.
 
-def _find_modules(package_path: PackagePath):
-    mods = []
-    lines = package_path.read_text().split('\n')
-    for l in lines:
-        pth = Path(l)
-        if pth.is_dir():
-            for m in pth.iterdir():
-                if mod := _classify_module(m):
-                    mods.append(mod)
-    return mods
+    Args:
+        dist: An `importlib.metadata.Distribution` object.
+
+    Returns:
+        A set of top-level module names provided by the distribution.
+    """
+    modules: Set[str] = set()
+    # Method 1: Use top_level.txt (most reliable)
+    try:
+        if top_level_txt := dist.read_text('top_level.txt'):
+            modules.update(line.strip() for line in top_level_txt.splitlines() if line.strip() and not line.startswith("_"))
+    except (FileNotFoundError, IOError, OSError):
+        pass
+
+    # Method 2: Fallback to iterating over files if top_level.txt is missing
+    if not modules and dist.files:
+        for file_path in dist.files:
+            # e.g., 'numpy/version.py' -> 'numpy'
+            # e.g., 'scipy.libs/...' -> skip
+            # e.g., 'some_package.py' -> 'some_package'
+            if file_path.parts:
+                top_part = file_path.parts[0]
+                if '.dist-info' in top_part or '.egg-info' in top_part:
+                    continue
+                if top_part.endswith('.py'):
+                    module_name = top_part[:-3]
+                    modules.add(module_name)
+                elif '.' not in top_part: # It's likely a directory-based package
+                    modules.add(top_part)
+    return modules
 
 
 def _module_origin_path(mod: ModuleType) -> Optional[Path]:
+    """Safely retrieves the resolved file path for a module object."""
     try:
         p = inspect.getsourcefile(mod) or inspect.getfile(mod)
         return Path(p).resolve() if p else None
@@ -100,7 +133,7 @@ def _module_origin_path(mod: ModuleType) -> Optional[Path]:
 def module_classifier(
     mod: ModuleType,
     *,
-    packages_dists: Optional[Dict[str, list]] = None,
+    packages_dists: Optional[Dict[str, str]] = None,
 ) -> str:
     """
     Classifies a module into a category based on its origin.
@@ -147,17 +180,20 @@ def module_classifier(
     platstdlib_path = Path(paths.get("platstdlib", stdlib_path)).resolve()
     site_packages_paths = {Path(p).resolve() for k, p in paths.items() if k in ("purelib", "platlib") and p}
 
-    origin_str = str(origin_path)
-    if origin_str.startswith(str(stdlib_path)) or origin_str.startswith(str(platstdlib_path)):
-        return "stdlib"
-    if any(origin_str.startswith(str(p)) for p in site_packages_paths):
-        return "thirdparty"
+    try:
+        if origin_path.is_relative_to(stdlib_path) or origin_path.is_relative_to(platstdlib_path):
+            return "stdlib"
+    except (AttributeError, ValueError): # is_relative_to is 3.9+, fallback for older versions
+        origin_str = str(origin_path)
+        if origin_str.startswith(str(stdlib_path)) or origin_str.startswith(str(platstdlib_path)):
+            return "stdlib"
+
+    if any(str(origin_path).startswith(str(p)) for p in site_packages_paths):
+         return "thirdparty"
 
     # packages_distributions mapping
-    if packages_dists:
-        top = name.split(".", 1)[0]
-        if top in packages_dists:
-            return "thirdparty"
+    if packages_dists and name.split(".", 1)[0] in packages_dists:
+        return "thirdparty"
 
     # If it's a compiled extension but not in stdlib or site-packages, classify as 'extension'
     if origin_path.suffix in (".so", ".pyd", ".dll", ".dylib"):

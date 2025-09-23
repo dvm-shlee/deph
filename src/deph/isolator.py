@@ -1,55 +1,30 @@
-# isolator.py
-"""
-Isolate a minimal, self-contained Python code block from one or more entry objects.
-
-The isolator consumes the report produced by `DependencyAnalyzer` and renders:
-  1) imports
-  2) module-level variables
-  3) definitions (classes first, then functions)
-
-Any names that remain unresolved in the analyzer report (`unbound`) are emitted as warnings.
-
-Typical usage
--------------
-    from .analyzer import DependencyAnalyzer
-    from .isolator import Isolator
-
-    iso = Isolator()
-    code, warnings, report = iso.isolate([some_func_or_class])
-    print(code)
-    for w in warnings:
-        print("WARN:", w)
-"""
 from __future__ import annotations
+
 import ast
 import sys
 import textwrap
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+
 from .analyzer import DependencyAnalyzer
-from .types import DefItem, VarsItem, ImportItem
-from .helper import is_stdlib, is_on_pypi
-from .types import AttrDefaultDict
+from .helper import is_on_pypi, is_stdlib
+from .types import AttrDefaultDict, DefItem, ImportItem
 
 if TYPE_CHECKING:
-    from typing import Any, Dict, Iterable, List, Sequence, Set, Tuple, Optional
-    
+    # This avoids a circular import at runtime
+    from .types import VarsItem
+
 
 class Isolator:
     """
-    Generate isolated Python source for a set of entry objects by leveraging
-    `DependencyAnalyzer`. The output code attempts to be pip/PEP8-friendly
-    (imports first, then variables, then definitions).
+    Generates minimal, self-contained Python source code from target objects.
 
-    Parameters
-    ----------
-    analyzer : DependencyAnalyzer | None
-        If provided, use this analyzer instance; otherwise construct with defaults.
-    sort_imports : bool
-        Whether to sort imports deterministically (recommended for stable output).
-    keep_dynamic_imports : bool
-        Whether to include dynamic import snippets (e.g., via importlib) in the output.
-    header_comment : bool
-        If True, prepend a brief "auto-generated" comment block.
+    This class consumes a report from `DependencyAnalyzer` to produce a single
+    string of Python code containing all necessary imports, module-level
+    variables, and definitions. It also generates warnings for any unresolved
+    (unbound) names.
+
+    The output is structured to be PEP 8 compliant, with imports first,
+    followed by variables and then definitions.
     """
 
     def __init__(
@@ -60,26 +35,42 @@ class Isolator:
         keep_dynamic_imports: bool = True,
         header_comment: bool = True,
     ) -> None:
+        """
+        Initializes the Isolator.
+
+        Args:
+            analyzer: An existing `DependencyAnalyzer` instance. If None, a
+                new one is created with default settings.
+            sort_imports: If True, imports are sorted deterministically for
+                stable output.
+            keep_dynamic_imports: If True, dynamic imports (e.g., using
+                `importlib`) are included in the output.
+            header_comment: If True, a descriptive header is prepended to the
+                generated code.
+        """
         self._analyzer = analyzer or DependencyAnalyzer()
         self.sort_imports = sort_imports
         self.keep_dynamic_imports = keep_dynamic_imports
         self.header_comment = header_comment
 
-    # ----------------------------
+    # --------------------------------------------------------------------------
     # Public API
-    # ----------------------------
+    # --------------------------------------------------------------------------
+
     def isolate(self, targets: Sequence[Any]) -> Tuple[str, List[str], Dict[str, Any]]:
         """
-        Run the analyzer on targets and render isolated code.
+        Analyzes targets and renders the isolated source code.
 
-        Returns
-        -------
-        code : str
-            The isolated Python source string.
-        warnings : List[str]
-            Human-readable warnings (e.g., unresolved/unbound names).
-        report : Dict[str, Any]
-            The raw analyzer report used to generate `code`.
+        Args:
+            targets: A sequence of Python objects (functions, classes) to isolate.
+
+        Returns:
+            A tuple containing:
+                - code (str): The generated, self-contained Python source code.
+                - warnings (List[str]): A list of warnings, primarily for
+                  unresolved names.
+                - report (Dict[str, Any]): The raw analysis report from
+                  `DependencyAnalyzer`.
         """
         report = self._analyzer.analyze_many(list(targets))
         code, warnings = self.isolate_from_report(report)
@@ -87,55 +78,59 @@ class Isolator:
 
     def isolate_from_report(self, report: Dict[str, Any]) -> Tuple[str, List[str]]:
         """
-        Render isolated code from a precomputed analyzer report.
+        Renders isolated code from a pre-computed analyzer report.
 
-        Parameters
-        ----------
-        report : dict
-            Output structure from `DependencyAnalyzer.analyze(…)` or `.analyze_many(…)`.
+        Args:
+            report: The output dictionary from a `DependencyAnalyzer` run.
 
-        Returns
-        -------
-        code : str
-            The isolated Python source string.
-        warnings : List[str]
-            Human-readable warnings (e.g., unresolved/unbound names).
+        Returns:
+            A tuple containing:
+                - code (str): The generated, self-contained Python source code.
+                - warnings (List[str]): A list of warnings.
         """
-        chunks: List[str] = []
+        sections: Dict[str, str] = {}
 
-        # 1) Imports
+        # 1. Collect Imports
         import_lines = self._collect_import_lines(report.get("imports", {}))
         if import_lines:
-            chunks.append("\n".join(import_lines))
-        report['requirements'] = _extract_package(report)
+            sections["imports"] = "\n".join(import_lines)
 
-        # 2) Module variables
+        # 2. Collect Module Variables
         var_lines = self._collect_vars_lines(report.get("vars", {}))
         if var_lines:
-            if chunks:  # keep a blank line between sections
-                chunks.append("")
-            chunks.append("\n".join(var_lines))
+            sections["vars"] = "\n".join(var_lines)
 
-        # 3) Definitions (classes first, then functions)
+        # 3. Collect Definitions
         def_lines = self._collect_def_lines(report.get("def_items", []))
         if def_lines:
-            if chunks:
-                chunks.append("")
-            chunks.append("\n\n".join(def_lines))
+            sections["defs"] = "\n\n".join(def_lines)
 
-        # Warnings (unbound)
+        # 4. Generate Header and Warnings
         warnings = self._collect_warnings(report.get("unbound", []))
-        
-        # Header
+        # Ensure a consistent output order: imports, then vars, then defs.
+        ordered_sections = [
+            sections.get("imports", ""),
+            sections.get("vars", ""),
+            sections.get("defs", ""),
+        ]
+        final_code = "\n\n".join(filter(None, ordered_sections))
+
         if self.header_comment:
-            chunks.insert(0, self._render_header(report))
+            requirements = self._extract_package_requirements(report)
+            header = self._render_header(report, requirements)
+            final_code = f"{header}\n{final_code}"
 
-        return "\n".join(chunks).rstrip() + "\n", warnings
+        return final_code.rstrip() + "\n", warnings
 
-    def _render_header(self, report: AttrDefaultDict) -> str:
+    # --------------------------------------------------------------------------
+    # Internal Rendering and Collection Logic
+    # --------------------------------------------------------------------------
+
+    def _render_header(
+        self, report: AttrDefaultDict, requirements: Dict[str, Any]
+    ) -> str:
         """
-        Render the header comment block for the isolated snippet.
-        Includes entries, section info, and unresolved warnings if present.
+        Renders the header comment block for the isolated snippet.
         """
         entries = report.get("entries", [])
         entry_labels = ", ".join(
@@ -143,51 +138,46 @@ class Isolator:
         ) or "<none>"
 
         unbound = sorted({str(x) for x in report.get("unbound", []) if x})
-        warn_line = ""
-        if unbound:
-            warn_line = f"# WARNINGS: {', '.join(unbound)}\n"
-            
-        # ---- Requirements from report['imports'] ----
-        requirements = report.get("requirements", {}) or {}
-        
-        if on_pypi := requirements.get("on_pypi", []) or []:
-            on_pypi = [i.package_name for i in on_pypi]
-        req_line = _format_pip_install(on_pypi)
-        
-        if unknown := requirements.get("unknown", []) or []:
-            unknown = [i.package_name for i in unknown]
-        unknown_line = f"# Unresolvable imports: {', '.join(unknown)}\n" if unknown else ""
+        warn_line = f"# WARNINGS: Unbound names: {', '.join(unbound)}\n" if unbound else ""
+
+        pypi_reqs = [item.package_name for item in requirements.get("on_pypi", [])]
+        req_line = self._format_pip_install(pypi_reqs)
+
+        unknown_reqs = [item.package_name for item in requirements.get("unknown", [])]
+        unknown_line = f"# Unresolved imports: {', '.join(unknown_reqs)}\n" if unknown_reqs else ""
 
         return (
-            "# ==============================================\n"
-            "# Auto-generated isolated snippet\n"
-            f"# Entries: {entry_labels}\n"
-            "# Sections: imports, variables, definitions\n"
+            "# ==================================================\n"
+            "# Auto-generated isolated Python snippet\n"
+            f"# Source entries: {entry_labels}\n"
+            f"# Sections: imports, variables, definitions\n"
             f"{req_line}"
             f"{unknown_line}"
             f"{warn_line}"
-            "# ==============================================\n"
+            "# ==================================================\n"
         )
 
-    def _collect_import_lines(self, imports_by_module: Dict[str, Dict[str, ImportItem]]) -> List[str]:
+    def _collect_import_lines(
+        self, imports_by_module: Dict[str, Dict[str, ImportItem]]
+    ) -> List[str]:
         """
-        Flatten and optionally sort import statements. Deduplicate by exact code line.
-
-        We keep dynamic imports only if `keep_dynamic_imports=True`.
+        Flattens and optionally sorts import statements.
         """
         seen: Set[str] = set()
         lines: List[str] = []
 
-        # Flatten: imports_by_module = { module_name: {alias: ImportItem, ...}, ...}
-        items: List[ImportItem] = []
-        for _modname, alias_map in imports_by_module.items():
-            items.extend(alias_map.values())
+        items: List[ImportItem] = [
+            item for alias_map in imports_by_module.values() for item in alias_map.values()
+        ]
 
-        # Optional sorting:
-        #   1) non-dynamic imports first
-        #   2) then by (module, code) to be deterministic
         if self.sort_imports:
-            items.sort(key=lambda it: (getattr(it, "is_dynamic", False), str(getattr(it, "module", "")) or "", str(it.code)))
+            items.sort(
+                key=lambda it: (
+                    getattr(it, "is_dynamic", False),
+                    str(getattr(it, "module", "")) or "",
+                    str(it.code),
+                )
+            )
 
         for imp in items:
             is_dyn = getattr(imp, "is_dynamic", False)
@@ -202,119 +192,109 @@ class Isolator:
 
     def _collect_vars_lines(self, vars_by_module: Dict[str, List[VarsItem]]) -> List[str]:
         """
-        Gather module-level variables in a deterministic order:
-        by module name, preserving the order already present in the report.
+        Gathers module-level variable definitions in a deterministic order.
         """
         lines: List[str] = []
         for module_name in sorted(vars_by_module.keys()):
-            for v in vars_by_module[module_name]:
-                code = getattr(v, "code", "").rstrip()
+            for var_item in vars_by_module[module_name]:
+                code = getattr(var_item, "code", "").rstrip()
                 if code:
                     lines.append(code)
         return lines
 
     def _collect_def_lines(self, def_items: Iterable[DefItem]) -> List[str]:
         """
-        Render definitions. Classes first, then functions.
-        If `ast.unparse` fails, fall back to the stored `DefItem.code`.
+        Renders definitions, placing classes before functions.
         """
-        classes: List[DefItem] = []
-        funcs: List[DefItem] = []
-        for d in def_items:
-            dtype = getattr(d, "type", "")
-            if dtype == "class":
-                classes.append(d)
-            elif dtype == "function":
-                funcs.append(d)
-            else:
-                # Unknown type: keep at the end as a function-like block
-                funcs.append(d)
+        classes = [d for d in def_items if getattr(d, "type", "") == "class"]
+        funcs = [d for d in def_items if getattr(d, "type", "") != "class"]
 
-        lines: List[str] = []
-        for di in classes:
-            lines.append(_unparse_or_fallback(di))
-        for di in funcs:
-            # Keep a blank line between class and the first function automatically
-            if lines and not lines[-1].endswith("\n"):
-                pass
-            lines.append(_unparse_or_fallback(di))
+        lines: List[str] = [self._unparse_or_fallback(di) for di in classes]
+        lines.extend(self._unparse_or_fallback(di) for di in funcs)
+        
         return lines
 
     def _collect_warnings(self, unbound: Iterable[str]) -> List[str]:
         """
-        Produce human-readable warnings for unresolved names.
-        Print them to stderr and also return them for programmatic use.
+        Produces human-readable warnings for unresolved names.
         """
-        unbound = sorted({str(x) for x in unbound if x})
-        if not unbound:
+        unbound_names = sorted({str(x) for x in unbound if x})
+        if not unbound_names:
             return []
 
-        warnings = [
-            "Unresolved names were detected. You may need to provide them at runtime or inject stubs:",
-            "  - " + "\n  - ".join(unbound),
-        ]
-        for w in warnings:
-            print(w, file=sys.stderr)
-        return warnings
-    
-    
-def _extract_package(report):
-    on_pypi = []
-    stdlib = []
-    unknown = []
-    
-    for imported_in_module in report.imports.values():
-        for impitem in imported_in_module.values():
-            pname = impitem.package_name
-            if not is_stdlib(pname):
-                if is_on_pypi(pname):
-                    on_pypi.append(impitem)
+        warning_message = (
+            "Unresolved names detected. These may need to be provided at runtime "
+            "or via stub definitions:\n - " + "\n - ".join(unbound_names)
+        )
+        print(warning_message, file=sys.stderr)
+        return [warning_message]
+
+    # --------------------------------------------------------------------------
+    # Static Utility Methods
+    # --------------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_package_requirements(report: Dict[str, Any]) -> Dict[str, List[ImportItem]]:
+        """
+        Categorizes third-party imports from a report into PyPI and unknown packages.
+        """
+        on_pypi, stdlib, unknown = [], [], []
+        
+        imports_by_module = report.get("imports", {})
+        for imported_in_module in imports_by_module.values():
+            for impitem in imported_in_module.values():
+                pname = impitem.package_name
+                if not is_stdlib(pname):
+                    if is_on_pypi(pname):
+                        on_pypi.append(impitem)
+                    else:
+                        unknown.append(impitem)
                 else:
-                    unknown.append(impitem)
-            else:
-                stdlib.append(impitem)
-    return AttrDefaultDict(
-        on_pypi = on_pypi,
-        stdlib = stdlib,
-        unknown = unknown,
-    )
-    
-    
-def _format_pip_install(packages, width: int = 80, indent: str = "    ") -> str:
-    """
-    Format a 'pip install ...' line. If it exceeds width, split with backslashes
-    and indent the continuation lines.
-    """
-    if not packages:
-        return ""
+                    stdlib.append(impitem)
 
-    base = "pip install "
-    line = base + " ".join(packages)
+        return AttrDefaultDict(on_pypi=on_pypi, stdlib=stdlib, unknown=unknown)
 
-    if len(line) <= width:
-        return f"# Resolve requirements: `{line}`\n"
+    @staticmethod
+    def _format_pip_install(
+        packages: List[str], width: int = 80, indent: str = "    "
+    ) -> str:
+        """
+        Formats a 'pip install' command, wrapping it if it exceeds line width.
+        """
+        if not packages:
+            return ""
 
-    wrapped = textwrap.wrap(
-        " ".join(packages),
-        width=width - len(base) - 2,  # backslash와 indent 여유
-        break_long_words=False,
-        break_on_hyphens=False
-    )
+        base = "pip install "
+        line = base + " ".join(packages)
 
-    lines = [base + wrapped[0] + " \\"]
-    for chunk in wrapped[1:]:
-        lines.append(indent + chunk + " \\")
-    lines[-1] = lines[-1].rstrip(" \\")
+        if len(line) <= width:
+            return f"# Requirements: `{line}`\n"
 
-    return "# Resolve requirements:\n" + "".join(f"#   ```{ln}```\n" for ln in lines)
+        # Wrap the package list for readability
+        wrapped = textwrap.wrap(
+            " ".join(packages),
+            width=width - len(base) - 4,  # Adjust for ` # ` and ` \`
+            break_long_words=False,
+            break_on_hyphens=False,
+        )
 
+        lines = [f"{base}{wrapped[0]} \\"]
+        lines.extend(f"{indent}{chunk} \\" for chunk in wrapped[1:])
+        lines[-1] = lines[-1].rstrip(" \\")
 
-def _unparse_or_fallback(di: DefItem) -> str:
-    node = getattr(di, "node", None)
-    if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-        try:
-            return ast.unparse(node)
-        except Exception:
-            pass
-    # fallback: whatever the analyzer stored
-    return getattr(di, "code", "").strip() or "# <unparseable definition>"
+        formatted_block = "\n".join(f"# {ln}" for ln in lines)
+        return f"# Requirements:\n{formatted_block}\n"
+
+    @staticmethod
+    def _unparse_or_fallback(di: DefItem) -> str:
+        """
+        Attempts to unparse a definition's AST node, falling back to stored code.
+        """
+        node = getattr(di, "node", None)
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            try:
+                return ast.unparse(node)
+            except Exception:
+                # Fall through to the stored code if unparsing fails
+                pass
+        return getattr(di, "code", "").strip() or "# <unparseable definition>"

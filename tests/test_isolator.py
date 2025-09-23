@@ -110,9 +110,21 @@ class TestIsolatorBasic(unittest.TestCase):
             i_import = min(i for i, ln in enumerate(clean) if ln.startswith("import") or ln.startswith("from "))
         except ValueError:
             i_import = -1
-        i_vars = next((i for i, ln in enumerate(clean) if re.match(r"^[A-Za-z_][A-Za-z0-9_]*\s*=", ln)), 10**9)
-        i_def = next((i for i, ln in enumerate(clean) if ln.startswith("class ") or ln.startswith("def ")), 10**9)
-        self.assertTrue(i_import == -1 or i_import < i_vars <= i_def)
+        
+        max_lines = len(clean) + 1
+        i_vars = next((i for i, ln in enumerate(clean) if re.match(r"^[A-Za-z_][A-Za-z0-9_]*\s*=", ln)), max_lines)
+        i_def = next((i for i, ln in enumerate(clean) if ln.startswith("class ") or ln.startswith("def ")), max_lines + 1)
+        
+        has_imports = i_import != -1
+        has_vars = i_vars < max_lines
+        has_defs = i_def < max_lines + 1
+
+        if has_imports and has_vars:
+            self.assertLess(i_import, i_vars, "Imports should come before variables")
+        if has_vars and has_defs:
+            self.assertLess(i_vars, i_def, "Variables should come before definitions")
+        if has_imports and has_defs:
+            self.assertLess(i_import, i_def, "Imports should come before definitions")
 
 
 class TestIsolatorAdvanced(unittest.TestCase):
@@ -168,7 +180,7 @@ class TestIsolatorAdvanced(unittest.TestCase):
         """Header should list all entries by module.name."""
         code, _, report, _ = run_isolation([S.simple_add, S.C.m_no_import])
         hdr = "\n".join(code.splitlines()[:8])
-        self.assertIn("Entries:", hdr)
+        self.assertIn("entries:", hdr)
         # our module is imported as 'test_samples'
         self.assertIn("test_samples.simple_add", hdr)
         # function entry inside class often resolved to the class entry; accept at least 2 entries shown

@@ -1,714 +1,547 @@
 from __future__ import annotations
+
 import ast
 import builtins
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
+
+# Local imports from the project structure
+from .helper import PACKAGE_DISTRIBUTIONS, module_classifier
 from .parser import get_module_ast
-from .visitors import LowLevelCollector, ImportCollector, NameUsageCollector
+from .types import AttrDefaultDict, DefItem, ImportItem, ModuleCtx, VarsItem
+from .visitors import ImportCollector, LowLevelCollector, NameUsageCollector
 from .visitors.usage import roots_in_expr
-from .helper import module_classifier, PACKAGE_DISTRIBUTIONS
-from .types import AttrDefaultDict, ImportItem, DefItem, VarsItem, ModuleCtx
 
 if TYPE_CHECKING:
-    from typing import List, Dict, Optional, Set, Any, Tuple
     from .types import AstDefs
 
-
 __all__ = [
-    "DependencyAnalyzer",   
+    "DependencyAnalyzer",
 ]
 
 
-# Public API
 class DependencyAnalyzer:
     """
-    Multi-entry dependency analyzer that resolves, recursively:
-      - DefItems
-      - ImportItems
-      - VarsItems
-      - Unbound names
+    Analyzes the dependency graph of Python objects.
 
-    Parameters
-    ----------
-    analyze_nested : {"all", "referenced_only", "none"}
-        Whether to descend into nested defs.
-    collapse_methods : bool
-        If True, method defs inside classes are excluded from the final report.
-    collapse_inner_funcs : bool
-        If True, function defs nested inside functions are excluded.
-    collapse_non_toplevel : bool
-        If True, only top-level defs are included.
+    This class recursively resolves dependencies for functions, classes, and
+    module-level variables, starting from one or more entry-point objects.
+    It produces a report detailing all required definitions, imports,
+    variables, and any unbound names that could not be resolved.
+
+    Attributes:
+        analyze_nested (str): Strategy for analyzing nested functions/classes.
+            Can be "all", "referenced_only", or "none".
+        collapse_methods (bool): If True, methods are excluded from the report,
+            and only their parent class is included.
+        collapse_inner_funcs (bool): If True, nested functions are excluded.
+        collapse_non_toplevel (bool): If True, only top-level definitions
+            (module-level) are included in the final report.
     """
-    def __init__(self,
-                 analyze_nested: str = "all",
-                 collapse_methods: bool = True,
-                 collapse_inner_funcs: bool = True,
-                 collapse_non_toplevel: bool = False,
-                 ):
+
+    # --- Class-level Attribute Type Hinting ---
+    # Configuration attributes
+    analyze_nested: str
+    collapse_methods: bool
+    collapse_inner_funcs: bool
+    collapse_non_toplevel: bool
+
+    # Per-analysis state attributes
+    module_ctxs: Dict[Any, ModuleCtx]
+    ctx_by_node_id: Dict[int, ModuleCtx]
+    required_defs_by_id: Dict[int, DefItem]
+    required_imports_by_module: Dict[str, Dict[str, ImportItem]]
+    required_vars_by_module: Dict[str, List[VarsItem]]
+    unbound: Set[str]
+    visited_def_ids: Set[int]
+    visited_var_names_by_module: Dict[str, Set[str]]
+    emitted_var_names_by_module: Dict[str, Set[str]]
+
+    def __init__(
+        self,
+        analyze_nested: str = "all",
+        collapse_methods: bool = True,
+        collapse_inner_funcs: bool = True,
+        collapse_non_toplevel: bool = False,
+    ):
+        """
+        Initializes the DependencyAnalyzer with a given configuration.
+
+        Args:
+            analyze_nested: Strategy for descending into nested definitions.
+            collapse_methods: Whether to exclude methods from the report.
+            collapse_inner_funcs: Whether to exclude nested functions.
+            collapse_non_toplevel: Whether to only report top-level definitions.
+        """
         self.analyze_nested = analyze_nested
         self.collapse_methods = collapse_methods
         self.collapse_inner_funcs = collapse_inner_funcs
         self.collapse_non_toplevel = collapse_non_toplevel
 
+        self._initialize_analysis_state()
+
+    # --------------------------------------------------------------------------
+    # Public API
+    # --------------------------------------------------------------------------
+
     def analyze(self, target: Any) -> AttrDefaultDict:
+        """
+        Performs a dependency analysis on a single target object.
+
+        This is a convenience wrapper for `analyze_many`.
+
+        Args:
+            target: The Python object (function, class, etc.) to analyze.
+
+        Returns:
+            An AttrDefaultDict containing the analysis report.
+        """
         return self.analyze_many([target])
 
     def analyze_many(self, targets: List[Any]) -> AttrDefaultDict:
+        """
+        Performs a dependency analysis on a list of target objects.
+
+        This is the main entry point for the analysis. It resets the analyzer's
+        state and recursively resolves all dependencies for the provided targets.
+
+        Args:
+            targets: A list of Python objects to analyze.
+
+        Returns:
+            An AttrDefaultDict containing the analysis report, structured with
+            keys for 'entries', 'def_items', 'imports', 'vars', and 'unbound'.
+
+        Raises:
+            ValueError: If `targets` is empty or contains an object from an
+                        external (stdlib, third-party) module.
+        """
         if not targets:
             raise ValueError("targets must be a non-empty list of objects.")
 
-        # (1) Build/reuse module contexts
-        module_ctxs, entries = _build_module_contexts_for_targets(targets)
+        self._initialize_analysis_state()
+        entries = self._build_module_contexts(targets)
 
-        # (2) Global accumulators
-        required_defs_by_id: Dict[int, "DefItem"] = {}
-        required_imports_by_module: Dict[str, Dict[str, "ImportItem"]] = {}
-        required_vars_by_module: Dict[str, List[VarsItem]] = {}
-        unbound: Set[str] = set()
-
-        # track vars we've already appended to the report, per module
-        emitted_var_names_by_module: Dict[str, Set[str]] = {
-            ctx.module_name: set() for ctx in module_ctxs.values()
-        }
-
-        # node-id -> ctx map
-        ctx_by_node_id: Dict[int, ModuleCtx] = {}
-        for ctx in module_ctxs.values():
-            for nid in ctx.def_by_id.keys():
-                ctx_by_node_id[nid] = ctx
-
-        visited_def_ids: Set[int] = set()
-        visited_var_names_by_module: Dict[str, Set[str]] = {
-            ctx.module_name: set() for ctx in module_ctxs.values()
-        }
-
-        # (3) Resolve each entry def
         for tname, mname in entries:
-            ctx = next(c for c in module_ctxs.values() if c.module_name == mname)
+            ctx = next(c for c in self.module_ctxs.values() if c.module_name == mname)
             entry_def = ctx.def_by_name[tname]
-            _resolve_def(
-                d=entry_def,
-                ctx=ctx,
-                analyze_nested=self.analyze_nested,
-                required_defs_by_id=required_defs_by_id,
-                required_imports_by_module=required_imports_by_module,
-                required_vars_by_module=required_vars_by_module,
-                unbound=unbound,
-                visited_def_ids=visited_def_ids,
-                visited_var_names_by_module=visited_var_names_by_module,
-                emitted_var_names_by_module=emitted_var_names_by_module,   # <<< FIX
-            )
+            self._resolve_def(entry_def, ctx)
 
-        # (4) Final report: filtering
-        final_def_items = _filter_final_defs(
-            required_defs_by_id=required_defs_by_id,
-            ctx_by_node_id=ctx_by_node_id,
-            collapse_methods=self.collapse_methods,
-            collapse_inner_funcs=self.collapse_inner_funcs,
-            collapse_non_toplevel=self.collapse_non_toplevel,
-        )
+        final_def_items = self._filter_final_defs()
+
+        # Clean up empty entries from the report for clarity
+        final_imports = {k: v for k, v in self.required_imports_by_module.items() if v}
+        final_vars = {k: v for k, v in self.required_vars_by_module.items() if v}
 
         entries_report = [{"name": name, "module": module} for (name, module) in entries]
+        return AttrDefaultDict(
+            entries=entries_report,
+            def_items=final_def_items,
+            imports=final_imports,
+            vars=final_vars,
+            unbound=sorted(self.unbound),
+        )
 
-        report = AttrDefaultDict(
-            entries = entries_report,
-            def_items = final_def_items,
-            imports = required_imports_by_module,  # by module: alias -> ImportItem
-            vars = required_vars_by_module,        # by module: List[VarsItem]
-            unbound = sorted(unbound))
-        return report
+    # --------------------------------------------------------------------------
+    # Internal Core Logic
+    # --------------------------------------------------------------------------
 
+    def _initialize_analysis_state(self) -> None:
+        """Resets all state attributes for a fresh analysis run."""
+        self.module_ctxs = {}
+        self.ctx_by_node_id = {}
+        self.required_defs_by_id = {}
+        self.required_imports_by_module = {}
+        self.required_vars_by_module = {}
+        self.unbound = set()
+        self.visited_def_ids = set()
+        self.visited_var_names_by_module = {}
+        self.emitted_var_names_by_module = {}
 
+    def _build_module_contexts(self, targets: List[Any]) -> List[Tuple[str, str]]:
+        """
+        Builds and indexes ModuleCtx objects for all modules related to the targets.
 
-# internal
-def _build_module_contexts_for_targets(
-    targets: List[Any],
-) -> Tuple[Dict[Any, ModuleCtx], List[Tuple[str, str]]]:
-    """
-    Build/collect ModuleCtx objects for all target objects and return:
-      - module_ctxs: map of module object -> ModuleCtx
-      - entries: list of (entry_name, module_name) pairs
-    """
-    module_ctxs: Dict[Any, ModuleCtx] = {}
-    entries: List[Tuple[str, str]] = []
+        This method populates the analyzer's state with context information
+        for each module, preventing redundant parsing and analysis.
 
-    for t in targets:
-        _, mod = get_module_ast(t)
-        
-        kind = module_classifier(mod, packages_dists=PACKAGE_DISTRIBUTIONS)
-        if kind in ("stdlib", "thirdparty", "builtin", "extension"):
-            tname = getattr(t, "__name__", type(t).__name__)
-            mname = getattr(mod, "__name__", repr(mod))
-            msg = (f"Entry target '{tname}' belongs to external module '{mname}' ({kind}). "
-                   "Pass a symbol from your own module (e.g., a wrapper def), "
-                   "or use a variable-entry API if you expose one.")
-            raise ValueError(msg)
+        Args:
+            targets: The list of entry-point objects.
 
-        if mod not in module_ctxs:
-            module_ctxs[mod] = _build_module_ctx_from_target(t)
-        ctx = module_ctxs[mod]
+        Returns:
+            A list of (name, module_name) tuples for each entry point.
+        """
+        entries: List[Tuple[str, str]] = []
+        for t in targets:
+            _, mod = get_module_ast(t)
 
-        tname = getattr(t, "__name__", None)
-        if tname is None:
-            raise ValueError(f"Target {t} must have a __name__.")
-
-        # If fully-qualified __name__ isn't present as a def, try its basename.
-        if tname not in ctx.def_by_name:
-            alt = tname.split(".")[-1]
-            if alt in ctx.def_by_name:
-                tname = alt
-            else:
+            kind = module_classifier(mod, packages_dists=PACKAGE_DISTRIBUTIONS)
+            if kind in ("stdlib", "thirdparty", "builtin", "extension"):
+                tname = getattr(t, "__name__", type(t).__name__)
+                mname = getattr(mod, "__name__", repr(mod))
                 raise ValueError(
-                    f"Target '{tname}' not found among DefItems in module {ctx.module_name}."
+                    f"Entry target '{tname}' belongs to external module '{mname}' ({kind}). "
+                    "Pass a symbol from your own module."
                 )
-        entries.append((tname, ctx.module_name))
 
-    return module_ctxs, entries
+            if mod not in self.module_ctxs:
+                self.module_ctxs[mod] = self._build_module_ctx_from_target(t)
+            ctx = self.module_ctxs[mod]
 
+            tname = getattr(t, "__name__", None)
+            if tname is None:
+                raise ValueError(f"Target {t} must have a __name__.")
 
-def _filter_final_defs(
-    required_defs_by_id: Dict[int, "DefItem"],
-    ctx_by_node_id: Dict[int, ModuleCtx],
-    collapse_methods: bool,
-    collapse_inner_funcs: bool,
-    collapse_non_toplevel: bool,
-) -> List["DefItem"]:
-    """
-    Apply post-filters (collapse methods, inner functions, non-toplevel) to the
-    resolved DefItems.
-    """
-    def _parent_id_of(d: "DefItem") -> Optional[int]:
-        ctx = ctx_by_node_id.get(id(d.node))
-        if not ctx:
-            return None
-        return ctx.parent_of.get(id(d.node))
+            if tname not in ctx.def_by_name:
+                alt = tname.split(".")[-1]
+                tname = alt if alt in ctx.def_by_name else tname
+                if tname not in ctx.def_by_name:
+                     raise ValueError(f"Target '{tname}' not found in module {ctx.module_name}.")
+            
+            entries.append((tname, ctx.module_name))
 
-    def _is_method(d: "DefItem") -> bool:
-        pid = _parent_id_of(d)
-        if pid is None:
-            return False
-        ctx = ctx_by_node_id[pid]
-        parent = ctx.def_by_id[pid]
-        return parent.type == "class" and d.type == "function"
+        for ctx in self.module_ctxs.values():
+            mname = ctx.module_name
+            self.visited_var_names_by_module.setdefault(mname, set())
+            self.emitted_var_names_by_module.setdefault(mname, set())
+            for nid in ctx.def_by_id:
+                self.ctx_by_node_id[nid] = ctx
 
-    def _is_inner_func(d: "DefItem") -> bool:
-        pid = _parent_id_of(d)
-        if pid is None:
-            return False
-        ctx = ctx_by_node_id[pid]
-        parent = ctx.def_by_id[pid]
-        return parent.type == "function" and d.type == "function"
+        return entries
 
-    def _is_toplevel(d: "DefItem") -> bool:
-        return _parent_id_of(d) is None
+    def _resolve_def(self, d: DefItem, ctx: ModuleCtx) -> None:
+        """
+        Recursively resolves all dependencies for a given `DefItem`.
 
-    final_def_items = list(required_defs_by_id.values())
-    if collapse_methods:
-        final_def_items = [d for d in final_def_items if not _is_method(d)]
-    if collapse_inner_funcs:
-        final_def_items = [d for d in final_def_items if not _is_inner_func(d)]
-    if collapse_non_toplevel:
-        final_def_items = [d for d in final_def_items if _is_toplevel(d)]
-    return final_def_items
+        Args:
+            d: The `DefItem` (a function or class definition) to resolve.
+            ctx: The `ModuleCtx` of the module containing the definition.
+        """
+        did = id(d.node)
+        if did in self.visited_def_ids:
+            return
+        self.visited_def_ids.add(did)
+        self.required_defs_by_id[did] = d
 
+        # If 'd' is a method, ensure its parent class is also resolved.
+        if self._is_method(d):
+            if parent_id := self._parent_id_of(d):
+                self._resolve_def(ctx.def_by_id[parent_id], ctx)
 
-def _resolve_def(
-    d: "DefItem",
-    ctx: ModuleCtx,
-    analyze_nested: str,
-    required_defs_by_id: Dict[int, "DefItem"],
-    required_imports_by_module: Dict[str, Dict[str, "ImportItem"]],
-    required_vars_by_module: Dict[str, List[VarsItem]],
-    unbound: Set[str],
-    visited_def_ids: Set[int],
-    visited_var_names_by_module: Dict[str, Set[str]],
-    emitted_var_names_by_module: Dict[str, Set[str]],
-) -> None:
-    """
-    Resolve a single DefItem `d` within module `ctx`:
+        self._ensure_buckets_for_ctx(ctx)
 
-    Steps
-    -----
-    1) Collect unbound names used by `d` (including nested headers).
-    2) Satisfy via:
-       - module imports,
-       - module-level variables (resolve RHS recursively),
-       - same-module defs (resolve recursively).
-    3) Optionally descend into nested defs/classes based on `analyze_nested`.
-    4) Any remaining names are appended to global `unbound`.
+        # Always check for and include __future__ imports from the source module
+        # as they affect how type hints are parsed.
+        for alias, imp_item in ctx.imported.items():
+            if imp_item.module == "__future__":
+                self.required_imports_by_module[ctx.module_name][alias] = imp_item
 
-    Parameters
-    ----------
-    analyze_nested : {"all", "referenced_only", "none"}
-        Controls whether/which nested defs/classes are traversed.
-    emitted_var_names_by_module : Dict[str, Set[str]]
-        Names of module variables that have already been appended to the report
-        per module, to prevent duplicate VarsItem entries.
-    """
-    # 0) De-dup: skip if this def node has already been resolved
-    did = id(d.node)
-    if did in visited_def_ids:
-        return
-    visited_def_ids.add(did)
+        unbound_names = self._extract_unbound_names(d.node)
+        self._resolve_pending_names(unbound_names, ctx)
 
-    # Track this def as required
-    required_defs_by_id[did] = d
+        self._resolve_nested_defs(d, ctx)
+        self.unbound.update(unbound_names)
 
-    # Ensure buckets exist for this module
-    _ensure_import_bucket(required_imports_by_module, ctx)
-    _ensure_vars_bucket(required_vars_by_module, ctx)
+    def _resolve_var(self, var_name: str, ctx: ModuleCtx) -> None:
+        """
+        Resolves the Right-Hand Side (RHS) dependencies of a module-level variable.
 
-    # (a) Collect external dependency candidates for this def
-    unb = _extract_unbound_names(d.node)
+        Args:
+            var_name: The name of the variable to resolve.
+            ctx: The `ModuleCtx` of the module containing the variable.
+        """
+        module = ctx.module_name
+        if var_name in self.visited_var_names_by_module[module]:
+            return
+        self.visited_var_names_by_module[module].add(var_name)
 
-    # (b) Satisfy through module imports
-    for name in sorted(list(unb)):
-        if name in ctx.imported:
-            required_imports_by_module[ctx.module_name][name] = ctx.imported[name]
-            unb.discard(name)
+        expr = ctx.module_var_exprs.get(var_name)
+        if expr is None:
+            return
 
-    # (c) Satisfy through module-level variables (+ resolve their RHS recursively)
-    for name in sorted(list(unb)):
-        if name in ctx.module_vars_map:
-            _add_var_and_resolve(
-                ctx=ctx,
-                name=name,
-                required_vars_by_module=required_vars_by_module,
-                required_imports_by_module=required_imports_by_module,
-                visited_var_names_by_module=visited_var_names_by_module,
-                unbound=unbound,
-                required_defs_by_id=required_defs_by_id,
-                visited_def_ids=visited_def_ids,
-                analyze_nested=analyze_nested,
-                emitted_var_names_by_module=emitted_var_names_by_module,  # keep shared dedup state
-            )
-            unb.discard(name)
+        roots = roots_in_expr(expr)
+        if not roots and isinstance(expr, ast.Name) and isinstance(expr.ctx, ast.Load):
+            roots = {expr.id}
+        if not roots:
+            return
 
-    # (d) Satisfy through same-module defs (recursive)
-    for name in sorted(list(unb)):
-        if name in ctx.def_by_name:
-            _resolve_def(
-                d=ctx.def_by_name[name],
-                ctx=ctx,
-                analyze_nested=analyze_nested,
-                required_defs_by_id=required_defs_by_id,
-                required_imports_by_module=required_imports_by_module,
-                required_vars_by_module=required_vars_by_module,
-                unbound=unbound,
-                visited_def_ids=visited_def_ids,
-                visited_var_names_by_module=visited_var_names_by_module,
-                emitted_var_names_by_module=emitted_var_names_by_module,
-            )
-            unb.discard(name)
+        pending = set(roots)
+        self._ensure_buckets_for_ctx(ctx)
+        self._resolve_pending_names(pending, ctx)
+        self.unbound.update(pending)
 
-    # Remaining unresolved names (so far)
-    unresolved_after = set(unb)
+    def _resolve_pending_names(self, pending: Set[str], ctx: ModuleCtx) -> None:
+        """
+        Shared helper to resolve a set of unbound names against the module context.
 
-    # (e) Optionally descend into nested defs/classes
-    nested_children = list(d.function_defs) + list(d.class_defs)
-    if nested_children:
-        if analyze_nested == "all":
+        It attempts to satisfy names by checking for imports, other module
+        variables, or other definitions within the same module. The `pending`
+        set is modified in-place.
+
+        Args:
+            pending: A set of string names to resolve.
+            ctx: The `ModuleCtx` to resolve against.
+        """
+        module = ctx.module_name
+        for name in list(pending):
+            # Special case: Ignore names from the 'typing' module that might be
+            # picked up from type hints but are not real dependencies.
+            # This handles cases like `_GenericAlias` being pulled in.
+            if name in getattr(ctx.module_obj, "__dict__", {}):
+                obj = getattr(ctx.module_obj, name, None)
+                if getattr(obj, "__module__", "") == "typing":
+                    pending.discard(name)
+                    continue
+            if name in ctx.imported:
+                self.required_imports_by_module[module][name] = ctx.imported[name]
+                pending.discard(name)
+            elif name in ctx.module_vars_map:
+                self._add_var_and_resolve(name, ctx)
+                pending.discard(name)
+            elif name in ctx.def_by_name:
+                self._resolve_def(ctx.def_by_name[name], ctx)
+                pending.discard(name)
+
+    def _add_var_and_resolve(self, name: str, ctx: ModuleCtx) -> None:
+        """
+        Adds a `VarsItem` to the report and triggers resolution of its dependencies.
+
+        This method ensures a variable is added to the report only once per module.
+
+        Args:
+            name: The name of the variable.
+            ctx: The relevant `ModuleCtx`.
+        """
+        module = ctx.module_name
+        self._ensure_buckets_for_ctx(ctx)
+
+        if name not in self.emitted_var_names_by_module[module]:
+            self.emitted_var_names_by_module[module].add(name)
+            vi = ctx.module_vars_map[name]
+            self.required_vars_by_module[module].append(vi)
+        
+        self._resolve_var(name, ctx)
+
+    def _resolve_nested_defs(self, d: DefItem, ctx: ModuleCtx) -> None:
+        """
+        Handles the resolution of nested definitions based on the `analyze_nested` strategy.
+
+        Args:
+            d: The parent `DefItem` containing the nested definitions.
+            ctx: The relevant `ModuleCtx`.
+        """
+        nested_children = list(d.function_defs) + list(d.class_defs)
+        if not nested_children:
+            return
+
+        to_descend = []
+        if self.analyze_nested == "all":
             to_descend = nested_children
-        elif analyze_nested == "referenced_only":
-            # only descend into nested defs whose names are actually loaded in parent body
-            parent_loads = _local_load_names(d.node)
+        elif self.analyze_nested == "referenced_only":
+            parent_loads = self._local_load_names(d.node)
             to_descend = [ch for ch in nested_children if ch.name in parent_loads]
-        else:
-            to_descend = []
 
         for ch in to_descend:
-            _resolve_def(
-                d=ch,
-                ctx=ctx,
-                analyze_nested=analyze_nested,
-                required_defs_by_id=required_defs_by_id,
-                required_imports_by_module=required_imports_by_module,
-                required_vars_by_module=required_vars_by_module,
-                unbound=unbound,
-                visited_def_ids=visited_def_ids,
-                visited_var_names_by_module=visited_var_names_by_module,
-                emitted_var_names_by_module=emitted_var_names_by_module,
-            )
+            self._resolve_def(ch, ctx)
 
-    # (f) Add unresolved names to the global set
-    unbound.update(unresolved_after)
+    def _filter_final_defs(self) -> List[DefItem]:
+        """
+        Applies post-filters to the resolved `DefItem`s based on configuration.
 
+        Returns:
+            A final, filtered list of `DefItem` objects for the report.
+        """
+        defs = list(self.required_defs_by_id.values())
+        if self.collapse_methods:
+            defs = [d for d in defs if not self._is_method(d)]
+        if self.collapse_inner_funcs:
+            defs = [d for d in defs if not self._is_inner_func(d)]
+        if self.collapse_non_toplevel:
+            defs = [d for d in defs if self._is_toplevel(d)]
+        return defs
 
-def _add_var_and_resolve(
-    ctx: ModuleCtx,
-    name: str,
-    required_vars_by_module: Dict[str, List[VarsItem]],
-    required_imports_by_module: Dict[str, Dict[str, "ImportItem"]],
-    visited_var_names_by_module: Dict[str, Set[str]],
-    unbound: Set[str],
-    *,
-    required_defs_by_id: Dict[int, "DefItem"],
-    visited_def_ids: Set[int],
-    analyze_nested: str,
-    emitted_var_names_by_module: Dict[str, Set[str]],
-) -> None:
-    """
-    Append a module-level variable (VarsItem) to the report (deduped), then
-    resolve its RHS dependencies recursively.
+    # --------------------------------------------------------------------------
+    # Internal Helpers & Predicates
+    # --------------------------------------------------------------------------
 
-    Dedup rules
-    -----------
-    - Per module, a var name is appended to the report at most once.
-    - Even if already appended, we still call `_resolve_var` to ensure
-      dependencies are fully traversed.
-    """
-    module = ctx.module_name
-    _ensure_vars_bucket(required_vars_by_module, ctx)
+    def _parent_id_of(self, d: DefItem) -> Optional[int]:
+        """Retrieves the AST node ID of a `DefItem`'s parent."""
+        ctx = self.ctx_by_node_id.get(id(d.node))
+        return ctx.parent_of.get(id(d.node)) if ctx else None
 
-    # If we've already appended this var name for the module, skip appending but still resolve.
-    if name in emitted_var_names_by_module.setdefault(module, set()):
-        _resolve_var(
-            ctx=ctx,
-            var_name=name,
-            required_vars_by_module=required_vars_by_module,
-            required_imports_by_module=required_imports_by_module,
-            visited_var_names_by_module=visited_var_names_by_module,
-            unbound=unbound,
-            required_defs_by_id=required_defs_by_id,
-            visited_def_ids=visited_def_ids,
-            analyze_nested=analyze_nested,
-            emitted_var_names_by_module=emitted_var_names_by_module,
+    def _is_method(self, d: DefItem) -> bool:
+        """Checks if a `DefItem` is a method within a class."""
+        pid = self._parent_id_of(d)
+        if pid is None: return False
+        parent_ctx = self.ctx_by_node_id.get(pid)
+        if not parent_ctx: return False
+        parent = parent_ctx.def_by_id.get(pid)
+        return parent is not None and parent.type == "class" and d.type == "function"
+
+    def _is_inner_func(self, d: DefItem) -> bool:
+        """Checks if a `DefItem` is a nested function."""
+        pid = self._parent_id_of(d)
+        if pid is None: return False
+        parent_ctx = self.ctx_by_node_id.get(pid)
+        if not parent_ctx: return False
+        parent = parent_ctx.def_by_id.get(pid)
+        return parent is not None and parent.type == "function" and d.type == "function"
+
+    def _is_toplevel(self, d: DefItem) -> bool:
+        """Checks if a `DefItem` is at the top level of a module."""
+        return self._parent_id_of(d) is None
+
+    def _ensure_buckets_for_ctx(self, ctx: ModuleCtx) -> None:
+        """Ensures that result dictionaries have entries for the given module."""
+        mname = ctx.module_name
+        self.required_imports_by_module.setdefault(mname, {})
+        self.required_vars_by_module.setdefault(mname, [])
+
+    # --------------------------------------------------------------------------
+    # Static Utility Methods
+    # --------------------------------------------------------------------------
+
+    @staticmethod
+    def _build_module_ctx_from_target(target: Any) -> ModuleCtx:
+        """Constructs a `ModuleCtx` object from a target object."""
+        tree, mod = get_module_ast(target)
+        ll = LowLevelCollector(tree)
+        imported = ImportCollector(ll.pruned).imported
+        def_by_id, parent_of, def_by_name = DependencyAnalyzer._index_defitems_with_parents(ll.defs)
+        
+        known_def_names = set(def_by_name.keys())
+        known_import_aliases = set(imported.keys())
+        module_vars_map, module_var_exprs = DependencyAnalyzer._collect_module_vars_with_exprs(
+            ll.pruned, known_def_names, known_import_aliases
         )
-        return
 
-    # Append once
-    vi = ctx.module_vars_map[name]
-    required_vars_by_module[module].append(vi)
-    emitted_var_names_by_module[module].add(name)
-
-    # And resolve its RHS dependencies
-    _resolve_var(
-        ctx=ctx,
-        var_name=name,
-        required_vars_by_module=required_vars_by_module,
-        required_imports_by_module=required_imports_by_module,
-        visited_var_names_by_module=visited_var_names_by_module,
-        unbound=unbound,
-        required_defs_by_id=required_defs_by_id,
-        visited_def_ids=visited_def_ids,
-        analyze_nested=analyze_nested,
-        emitted_var_names_by_module=emitted_var_names_by_module,
-    )
-
-
-def _resolve_var(
-    ctx: ModuleCtx,
-    var_name: str,
-    required_vars_by_module: Dict[str, List[VarsItem]],
-    required_imports_by_module: Dict[str, Dict[str, "ImportItem"]],
-    visited_var_names_by_module: Dict[str, Set[str]],
-    unbound: Set[str],
-    *,
-    required_defs_by_id: Dict[int, "DefItem"],
-    visited_def_ids: Set[int],
-    analyze_nested: str,
-    emitted_var_names_by_module: Dict[str, Set[str]],
-) -> None:
-    """
-    Resolve RHS dependencies of a module-level variable:
-      1) imports (by alias)
-      2) other module vars (recursive)
-      3) same-module defs (recursive)
-      4) any leftovers -> global `unbound`
-
-    Re-entrancy/loops:
-      - Uses `visited_var_names_by_module[module]` to avoid infinite recursion.
-    """
-    module = ctx.module_name
-    visited = visited_var_names_by_module.setdefault(module, set())
-    if var_name in visited:
-        return
-    visited.add(var_name)
-
-    expr = ctx.module_var_exprs.get(var_name)
-    if expr is None:
-        # e.g., AugAssign or annotated assign without a value
-        return
-
-    roots = roots_in_expr(expr)
-
-    # Defensive fallback: if someone changes roots_in_expr and it misses bare Name(load)
-    import ast as _ast
-    if not roots and isinstance(expr, _ast.Name) and isinstance(expr.ctx, _ast.Load):
-        roots = {expr.id}
-
-    if not roots:
-        return
-
-    _ensure_import_bucket(required_imports_by_module, ctx)
-    _ensure_vars_bucket(required_vars_by_module, ctx)
-
-    pending: Set[str] = set(roots)
-
-    # (1) resolve via module imports
-    for r in list(pending):
-        if r in ctx.imported:
-            required_imports_by_module[module][r] = ctx.imported[r]
-            pending.discard(r)
-
-    # (2) resolve via other module-level vars (recursive)
-    for r in list(pending):
-        if r in ctx.module_vars_map:
-            _add_var_and_resolve(
-                ctx=ctx,
-                name=r,
-                required_vars_by_module=required_vars_by_module,
-                required_imports_by_module=required_imports_by_module,
-                visited_var_names_by_module=visited_var_names_by_module,
-                unbound=unbound,
-                required_defs_by_id=required_defs_by_id,
-                visited_def_ids=visited_def_ids,
-                analyze_nested=analyze_nested,
-                emitted_var_names_by_module=emitted_var_names_by_module,
-            )
-            pending.discard(r)
-
-    # (3) resolve via same-module defs (recursive)
-    for r in list(pending):
-        if r in ctx.def_by_name:
-            _resolve_def(
-                d=ctx.def_by_name[r],
-                ctx=ctx,
-                analyze_nested=analyze_nested,
-                required_defs_by_id=required_defs_by_id,
-                required_imports_by_module=required_imports_by_module,
-                required_vars_by_module=required_vars_by_module,
-                unbound=unbound,
-                visited_def_ids=visited_def_ids,
-                visited_var_names_by_module=visited_var_names_by_module,
-                emitted_var_names_by_module=emitted_var_names_by_module,
-            )
-            pending.discard(r)
-
-    # (4) anything left is unbound (e.g., globals not in imports/vars/defs)
-    unbound.update(pending)
-
-
-
-
-def _ensure_import_bucket(required_imports_by_module: Dict[str, Dict[str, "ImportItem"]], ctx: ModuleCtx) -> None:
-    """Ensure the import bucket exists for a module."""
-    if ctx.module_name not in required_imports_by_module:
-        required_imports_by_module[ctx.module_name] = {}
-
-
-def _ensure_vars_bucket(required_vars_by_module: Dict[str, List[VarsItem]], ctx: ModuleCtx) -> None:
-    """Ensure the vars bucket exists for a module."""
-    if ctx.module_name not in required_vars_by_module:
-        required_vars_by_module[ctx.module_name] = []
-
-
-def _local_load_names(def_node: AstDefs) -> Set[str]:
-    """
-    Collect locally loaded bare Name identifiers in the body of a def/class node.
-    Used to decide which nested children to descend into when analyze_nested="referenced_only".
-    """
-    loads: Set[str] = set()
-
-    class V(ast.NodeVisitor):
-        def visit_Name(self, n: ast.Name):
-            if isinstance(n.ctx, ast.Load):
-                loads.add(n.id)
-
-    for n in def_node.body:
-        V().visit(n)
-    return loads
-
-
-def _extract_unbound_names(def_node: AstDefs) -> Set[str]:
-    """
-    Compute the set of unbound root names used in a def/class node:
-      - Parameters are local.
-      - Names assigned locally are excluded.
-      - Builtins and common implicit names ('self', 'cls') are excluded.
-      - For classes, also consider bases/keywords/decorators.
-      - Recurse into nested defs to include their external dependencies.
-    """
-    coll = NameUsageCollector()
-
-    # 1) Localize parameters
-    if isinstance(def_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        coll.visit_arguments(def_node.args)
-
-    # 2) Traverse body; nested defs/classes only register their names
-    for n in def_node.body:
-        coll.visit(n)
-
-    # 3) Class header roots (bases, keywords, decorators)
-    header_roots: Set[str] = set()
-    if isinstance(def_node, ast.ClassDef):
-        for b in def_node.bases:
-            header_roots |= NameUsageCollector.root_names_in_expr(b)
-        for kw in def_node.keywords or []:
-            if kw.arg is not None:
-                header_roots |= NameUsageCollector.root_names_in_expr(kw.value)
-        for dec in def_node.decorator_list:
-            header_roots |= NameUsageCollector.root_names_in_expr(dec)
-
-    builtin_names = {n for n in dir(builtins) if not n.startswith("_")}
-    ignore_names = {"self", "cls"}
-
-    parent_candidates = (coll.loads | coll.attr_roots | header_roots) - coll.local_stores - coll.params
-    parent_unbound = {n for n in parent_candidates if n not in builtin_names and n not in ignore_names}
-
-    # 4) Union with nested defs' external dependencies
-    nested_unbound: Set[str] = set()
-    for n in def_node.body:
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            nested_unbound |= _extract_unbound_names(n)
-
-    return parent_unbound | nested_unbound
-
-
-def _collect_module_vars_with_exprs(
-    toplevel: ast.Module,
-    known_def_names: Set[str],
-    known_import_aliases: Set[str],
-) -> Tuple[Dict[str, VarsItem], Dict[str, Optional[ast.AST]]]:
-    """
-    Collect module-level variables (Assign/AnnAssign/AugAssign) that are not
-    overshadowed by defs or imports. Return:
-      - vars_map: name -> VarsItem
-      - var_exprs: name -> value AST (or None for AugAssign)
-    """
-    vars_map: Dict[str, VarsItem] = {}
-    var_exprs: Dict[str, Optional[ast.AST]] = {}
-
-    def handle_assign(name: str, value: Optional[ast.AST], node: ast.AST):
-        if name in known_def_names or name in known_import_aliases:
-            return
-        if name in vars_map:
-            return
-        vars_map[name] = VarsItem(
-            name=name,
-            code=_safe_unparse(node),
-            value_kind=_value_kind(value),
+        return ModuleCtx(
+            module_name=getattr(mod, "__name__", repr(mod)),
+            module_obj=mod,
+            toplevel=ll.pruned,
+            def_by_id=def_by_id,
+            parent_of=parent_of,
+            def_by_name=def_by_name,
+            imported=imported,
+            module_vars_map=module_vars_map,
+            module_var_exprs=module_var_exprs,
         )
-        var_exprs[name] = value
 
-    def walk_stmts(stmts: List[ast.stmt]):
-        for node in stmts:
-            if isinstance(node, ast.Assign):
-                for tgt in node.targets:
-                    if isinstance(tgt, ast.Name):
-                        handle_assign(tgt.id, node.value, node)
-            elif isinstance(node, ast.AnnAssign):
-                if isinstance(node.target, ast.Name):
+    @staticmethod
+    def _index_defitems_with_parents(defitems: List[DefItem]) -> Tuple[Dict[int, DefItem], Dict[int, int], Dict[str, DefItem]]:
+        """Builds indices for DefItems by id, name, and parent relationship."""
+        by_id, parent_of, by_name = {}, {}, {}
+        
+        def _walk(d: DefItem, parent: Optional[DefItem]):
+            nid = id(d.node)
+            if nid not in by_id:
+                by_id[nid] = d
+                # Always overwrite to ensure the last definition seen in the source
+                # is the one that gets used, matching Python's behavior.
+                by_name[d.name] = d
+            if parent:
+                parent_of[nid] = id(parent.node)
+            for ch in list(d.function_defs) + list(d.class_defs):
+                _walk(ch, d)
+
+        for d in defitems:
+            _walk(d, None)
+        return by_id, parent_of, by_name
+    
+    @staticmethod
+    def _collect_module_vars_with_exprs(
+        toplevel: ast.Module, known_def_names: Set[str], known_import_aliases: Set[str]
+    ) -> Tuple[Dict[str, VarsItem], Dict[str, Optional[ast.AST]]]:
+        """Collects module-level variables not overshadowed by defs or imports."""
+        vars_map, var_exprs = {}, {}
+        statement_fields = ['body', 'orelse', 'handlers', 'finalbody']
+
+        def handle_assign(name: str, value: Optional[ast.AST], node: ast.AST):
+            if name in known_def_names or name in known_import_aliases or name in vars_map:
+                return
+            vars_map[name] = VarsItem(
+                name=name, code=DependencyAnalyzer._safe_unparse(node),
+                value_kind=DependencyAnalyzer._value_kind(value),
+            )
+            var_exprs[name] = value
+
+        def walk_stmts(stmts: List[ast.stmt]):
+            for node in stmts:
+                if isinstance(node, ast.Assign):
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Name): handle_assign(tgt.id, node.value, node)
+                elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
                     handle_assign(node.target.id, node.value, node)
-            elif isinstance(node, ast.AugAssign):
-                if isinstance(node.target, ast.Name):
+                elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
                     handle_assign(node.target.id, None, node)
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    continue
+                
+                for field in statement_fields:
+                    if content := getattr(node, field, None):
+                        if isinstance(content, list):
+                            walk_stmts(content)
 
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                # Skip bodies of nested defs for module-var collection
-                continue
+        walk_stmts(toplevel.body)
+        return vars_map, var_exprs
 
-            elif isinstance(node, ast.If):
-                walk_stmts(node.body); walk_stmts(node.orelse)
-            elif isinstance(node, ast.Try):
-                walk_stmts(node.body)
-                for h in node.handlers: walk_stmts(h.body)
-                walk_stmts(node.orelse); walk_stmts(node.finalbody)
-            elif isinstance(node, ast.With):
-                walk_stmts(node.body)
-            elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
-                walk_stmts(node.body); walk_stmts(node.orelse)
-            # Add more block types as needed
+    @staticmethod
+    def _extract_unbound_names(def_node: AstDefs) -> Set[str]:
+        """Computes the set of unbound root names used in a def/class node."""
+        coll = NameUsageCollector()
+        if isinstance(def_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            coll.visit_arguments(def_node.args)
+        for n in def_node.body:
+            coll.visit(n)
 
-    walk_stmts(toplevel.body)
-    return vars_map, var_exprs
+        header_roots = set()
+        if isinstance(def_node, ast.ClassDef):
+            for b in def_node.bases:
+                header_roots.update(NameUsageCollector.root_names_in_expr(b))
+            for kw in def_node.keywords or []:
+                if kw.arg is not None:
+                    header_roots.update(NameUsageCollector.root_names_in_expr(kw.value))
+            for dec in def_node.decorator_list:
+                header_roots.update(NameUsageCollector.root_names_in_expr(dec))
+        
+        builtin_names = {n for n in dir(builtins) if not n.startswith("_")}
+        ignore_names = {"self", "cls"}
+        
+        parent_candidates = (coll.loads | coll.attr_roots | header_roots) - (coll.local_stores | coll.params)
+        parent_unbound = {n for n in parent_candidates if n not in builtin_names and n not in ignore_names}
 
+        nested_unbound = set()
+        for n in def_node.body:
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                nested_unbound.update(DependencyAnalyzer._extract_unbound_names(n))
+        
+        return parent_unbound | nested_unbound
 
-def _value_kind(expr: Optional[ast.AST]) -> str:
-    """Classify the RHS expression kind for VarsItem metadata."""
-    if expr is None:
+    @staticmethod
+    def _local_load_names(def_node: AstDefs) -> Set[str]:
+        """Collects locally loaded bare Name identifiers in the body of a def/class node."""
+        loads = set()
+        class V(ast.NodeVisitor):
+            def visit_Name(self, n: ast.Name):
+                if isinstance(n.ctx, ast.Load):
+                    loads.add(n.id)
+        for n in def_node.body:
+            V().visit(n)
+        return loads
+
+    @staticmethod
+    def _value_kind(expr: Optional[ast.AST]) -> str:
+        """Classifies the RHS expression kind for `VarsItem` metadata."""
+        if expr is None: return "other"
+        if isinstance(expr, (ast.Constant, ast.Tuple, ast.List, ast.Dict, ast.Set)): return "literal"
+        if isinstance(expr, ast.Call): return "call"
+        if isinstance(expr, ast.Attribute): return "attr"
+        if isinstance(expr, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)): return "comprehension"
         return "other"
-    if isinstance(expr, (ast.Constant, ast.Tuple, ast.List, ast.Dict, ast.Set)):
-        return "literal"
-    if isinstance(expr, ast.Call):
-        return "call"
-    if isinstance(expr, ast.Attribute):
-        return "attr"
-    if isinstance(expr, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-        return "comprehension"
-    return "other"
 
-
-def _safe_unparse(node: ast.AST) -> str:
-    """Best-effort ast.unparse wrapper."""
-    try:
-        return ast.unparse(node)  # Python 3.9+
-    except Exception:
-        return "<unparseable>"
-
-
-def _index_defitems_with_parents(defitems: List["DefItem"]):
-    """
-    Build indices for DefItems:
-      - by_id: node-id -> DefItem
-      - parent_of: child node-id -> parent node-id
-      - by_name: first occurrence of name -> DefItem
-    """
-    by_id: Dict[int, "DefItem"] = {}
-    parent_of: Dict[int, int] = {}
-    by_name: Dict[str, "DefItem"] = {}
-
-    def _walk(d: "DefItem", parent: Optional["DefItem"]):
-        nid = id(d.node)
-        if nid not in by_id:
-            by_id[nid] = d
-            by_name.setdefault(d.name, d)
-        if parent is not None:
-            parent_of[nid] = id(parent.node)
-        for ch in d.function_defs:
-            _walk(ch, d)
-        for ch in d.class_defs:
-            _walk(ch, d)
-
-    for d in defitems:
-        _walk(d, None)
-
-    return by_id, parent_of, by_name
-
-
-def _build_module_ctx_from_target(target: Any) -> ModuleCtx:
-    """
-    Construct a ModuleCtx from an arbitrary object by:
-      - Fetching its module AST
-      - Collecting top-level defs (pruned)
-      - Collecting imports
-      - Indexing defs (by id/name, with parent map)
-      - Collecting module-level variables and their RHS ASTs
-    """
-    tree, mod = get_module_ast(target)
-    ll = LowLevelCollector(tree)
-    toplevel: ast.Module = ll.pruned
-    defitems: List["DefItem"] = ll.defs
-    imported: Dict[str, "ImportItem"] = ImportCollector(toplevel).imported
-
-    def_by_id, parent_of, def_by_name = _index_defitems_with_parents(defitems)
-
-    known_def_names = set(d.name for d in def_by_name.values())
-    known_import_aliases = set(imported.keys())
-    module_vars_map, module_var_exprs = _collect_module_vars_with_exprs(
-        toplevel=toplevel,
-        known_def_names=known_def_names,
-        known_import_aliases=known_import_aliases,
-    )
-
-    module_name = getattr(mod, "__name__", repr(mod))
-    return ModuleCtx(
-        module_name=module_name,
-        module_obj=mod,
-        toplevel=toplevel,
-        def_by_id=def_by_id,
-        parent_of=parent_of,
-        def_by_name=def_by_name,
-        imported=imported,
-        module_vars_map=module_vars_map,
-        module_var_exprs=module_var_exprs,
-    )
+    @staticmethod
+    def _safe_unparse(node: ast.AST) -> str:
+        """A wrapper for `ast.unparse` that fails gracefully."""
+        try:
+            return ast.unparse(node)
+        except Exception:
+            return "<unparseable>"
