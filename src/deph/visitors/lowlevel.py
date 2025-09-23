@@ -1,6 +1,6 @@
 import ast
 from copy import deepcopy
-from typing import List, Tuple
+from typing import List
 from ..types import DefItem, AstDefs
 
 class Pruner(ast.NodeTransformer):
