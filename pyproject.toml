@@ -13,6 +13,7 @@ maintainers = [{ name = "SungHo Lee", email = "shlee@unc.edu" }]
 keywords = ["dependency", "analysis", "isolation", "ast", "import"]
 classifiers = [
   "Programming Language :: Python :: 3",
+  "Development Status :: 5 - Production/Stable",
   "License :: OSI Approved :: MIT License",
   "Intended Audience :: Developers",
   "Topic :: Software Development",
@@ -34,7 +35,11 @@ style = "pep440"
 sources = ["src"]
 
 [tool.hatch.build.targets.wheel]
+only-includes = ["src/deph", "src/devh", "src/fmth"]
 artifacts = ["LICENSE"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
 
 [tool.hatch.build.targets.sdist]
 include = ["src", "LICENSE", "README.md", "tests"]
