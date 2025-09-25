@@ -33,7 +33,7 @@ sources = ["src"]
 include = ["src", "LICENSE", "README.md", "tests"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/deph", "src/devh"]
+packages = ["src/deph", "src/devh", "src/fmth"]
 artifacts = ["LICENSE"]
 
 [tool.pytest.ini_options]
