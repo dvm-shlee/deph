@@ -101,12 +101,10 @@ class NameUsageCollector(ast.NodeVisitor):
     def visit_ClassDef(self, node: ast.ClassDef):
         """
         Treats a nested class definition as a local store for its name.
-        Does not visit the class's body.
+        It visits bases, keywords, decorators, and the class body to find dependencies.
         """
         self.local_stores.add(node.name)
-        for base in node.bases: self.visit(base)
-        for keyword in node.keywords: self.visit(keyword)
-        for dec in node.decorator_list: self.visit(dec)
+        self.generic_visit(node)
 
     @staticmethod
     def _root_name(node: ast.AST) -> Optional[str]:
