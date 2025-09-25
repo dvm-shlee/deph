@@ -72,6 +72,12 @@ class NameUsageCollector(ast.NodeVisitor):
             elif isinstance(node.name, ast.Name):
                 self.local_stores.add(node.name.id)
         self.generic_visit(node)
+        
+    def visit_AnnAssign(self, node: ast.AnnAssign):
+        """Handles annotated assignments, visiting the annotation."""
+        if node.value:
+            self.visit(node.value)
+        self.visit(node.annotation)
 
     # For nested definitions, only register the name as a local store and do not visit the body.
     def visit_FunctionDef(self, node: ast.FunctionDef):
@@ -80,6 +86,7 @@ class NameUsageCollector(ast.NodeVisitor):
         Does not visit the function's body to keep the analysis scoped.
         """
         self.local_stores.add(node.name)
+        self.generic_visit(node.args)
         for dec in node.decorator_list: self.visit(dec)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
@@ -88,6 +95,7 @@ class NameUsageCollector(ast.NodeVisitor):
         Does not visit the function's body.
         """
         self.local_stores.add(node.name)
+        self.generic_visit(node.args)
         for dec in node.decorator_list: self.visit(dec)
 
     def visit_ClassDef(self, node: ast.ClassDef):
@@ -96,6 +104,8 @@ class NameUsageCollector(ast.NodeVisitor):
         Does not visit the class's body.
         """
         self.local_stores.add(node.name)
+        for base in node.bases: self.visit(base)
+        for keyword in node.keywords: self.visit(keyword)
         for dec in node.decorator_list: self.visit(dec)
 
     @staticmethod
