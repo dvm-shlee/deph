@@ -91,6 +91,16 @@ class Isolator:
 
         # 1. Collect Imports
         import_lines = self._collect_import_lines(report.get("imports", {}))
+
+        # Handle type hints from the report
+        typehints = report.get("typehints")
+        if typehints:
+            # Add future import for annotations at the very top.
+            import_lines.insert(0, "from __future__ import annotations")
+            # Generate 'from typing import ...' for type aliases.
+            typehint_imports = [f'{name} as {asname}' for asname, name in sorted(typehints.items())]
+            import_lines.append(f'from typing import {", ".join(typehint_imports)}')
+
         if import_lines:
             sections["imports"] = "\n".join(import_lines)
 
