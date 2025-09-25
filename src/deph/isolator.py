@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import ast
 import sys
 import textwrap
@@ -114,6 +115,14 @@ class Isolator:
             sections.get("defs", ""),
         ]
         final_code = "\n\n".join(filter(None, ordered_sections))
+
+        needed = []
+        for tname in ("Any","Optional","Union","Callable","Iterable","Sequence",
+                    "Mapping","Dict","List","Set","Tuple","Literal","TypedDict"):
+            if re.search(rf'\b{tname}\[', final_code) and f'from typing import {tname}' not in final_code:
+                needed.append(tname)
+        if needed:
+            final_code = f"from typing import {', '.join(sorted(set(needed)))}\n" + final_code
 
         if self.header_comment:
             requirements = self._extract_package_requirements(report)
