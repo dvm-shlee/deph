@@ -288,9 +288,6 @@ class DependencyAnalyzer:
             # This handles cases like `_GenericAlias` being pulled in.
             if name in getattr(ctx.module_obj, "__dict__", {}):
                 obj = getattr(ctx.module_obj, name, None)
-                if getattr(obj, "__module__", "") == "typing":
-                    pending.discard(name)
-                    continue
             if name in ctx.imported:
                 self.required_imports_by_module[module][name] = ctx.imported[name]
                 pending.discard(name)
