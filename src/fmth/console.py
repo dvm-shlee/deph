@@ -1,10 +1,11 @@
 from __future__ import annotations
-import sys
+import traceback
 from typing import TYPE_CHECKING
+from devh import log
 if TYPE_CHECKING:
-    from typing import Union, Literal, Tuple, TextIO, List, Optional
-
-
+    from typing import Union, Literal, Tuple, List, Optional
+    
+    
 _COLOR_CODES = {
     # Styles
     'bold': '1', 'underline': '4',
@@ -13,6 +14,21 @@ _COLOR_CODES = {
     'blue': '34', 'magenta': '35', 'cyan': '36', 'white': '37',
 }
 _RESET_CODE = '\033[0m'
+
+
+def init(*args, **kwargs):
+    """Initializes the logging system.
+
+    This is a convenience wrapper around `devh.log.init`. It accepts all the
+    same arguments for configuring console and file logging.
+
+    See Also
+    --------
+    devh.log.init
+        The underlying function with detailed documentation on all available
+        parameters like `level`, `log_file`, `use_console`, etc.
+    """
+    log.init(*args, **kwargs)
 
 
 def ask_yes_or_no(question: str) -> bool:
@@ -31,21 +47,17 @@ def ask_yes_or_no(question: str) -> bool:
             return True
         if reply.startswith('n'):
             return False
-        
-        sys.stderr.write("  Invalid input. Please enter 'y' or 'n'.\n")
-        sys.stderr.flush()
+        log.emit("Invalid input. Please enter 'y' or 'n'.", level='warning')
 
-@staticmethod
-def print_internal_error(io_handler: TextIO = sys.stderr) -> None:
-    """
-    Prints the current exception traceback to the specified I/O stream.
 
-    Args:
-        io_handler: The I/O stream to write to (defaults to sys.stderr).
+def print_internal_error() -> None:
     """
-    import traceback
-    traceback.print_exception(*sys.exc_info(),
-                            file=io_handler)
+    Logs the current exception traceback at the 'error' level.
+    """
+    # Capture the full traceback as a string and log it.
+    # The `end=''` prevents an extra newline since format_exc includes one.
+    exc_info = traceback.format_exc()
+    log.emit(exc_info, level='error', end='')
 
 
 def colored(
@@ -90,20 +102,13 @@ def colored(
 
 
 def message(string: str, 
-            io: Union[Literal['stdout', 'stderr'], TextIO] = 'stdout'):
+            level: Literal['debug', 'info', 'warning', 'error', 'critical'] = 'info',
+            end: str = '\n'):
     """
-    Writes a message to a specified output stream and flushes it.
+    Logs a message using the configured logger.
 
     Args:
         string: The message to write.
-        io: 'stdout', 'stderr', or a file-like object (defaults to 'stdout').
+        level: The logging level to use (defaults to 'info').
     """
-    stream = io
-    if io == 'stdout':
-        stream = sys.stdout
-    elif io == 'stderr':
-        stream = sys.stderr
-    
-    if hasattr(stream, 'write') and hasattr(stream, 'flush'):
-        stream.write(string)
-        stream.flush()
+    log.emit(string, level=level, end=end)
