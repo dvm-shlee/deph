@@ -1,5 +1,5 @@
 """
-devh.log
+deph.utils.log
 ========
 
 A simple and flexible logging setup utility.

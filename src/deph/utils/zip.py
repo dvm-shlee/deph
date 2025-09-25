@@ -1,5 +1,5 @@
 """
-devh.zip
+deph.utils.zip
 ========
 
 A set of lightweight utilities for **working with ZIP archives in-memory** and

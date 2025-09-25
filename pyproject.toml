@@ -35,11 +35,8 @@ style = "pep440"
 sources = ["src"]
 
 [tool.hatch.build.targets.wheel]
-only-includes = ["src/deph", "src/devh", "src/fmth"]
+packages = ["deph"]
 artifacts = ["LICENSE"]
-
-[tool.hatch.build.targets.wheel.sources]
-"src" = ""
 
 [tool.hatch.build.targets.sdist]
 include = ["src", "LICENSE", "README.md", "tests"]

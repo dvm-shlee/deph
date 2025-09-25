@@ -1,6 +1,6 @@
 from __future__ import annotations
 """
-devh.pip
+deph.utils.pip
 ========================
 
 A tiny, safe wrapper around `pip` to run installs/uninstalls from Python

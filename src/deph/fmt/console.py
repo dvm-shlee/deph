@@ -1,7 +1,8 @@
 from __future__ import annotations
 import traceback
 from typing import TYPE_CHECKING
-from devh import log
+from ..utils import log
+
 if TYPE_CHECKING:
     from typing import Union, Literal, Tuple, List, Optional
     
