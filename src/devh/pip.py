@@ -1,6 +1,6 @@
 from __future__ import annotations
 """
-devh.pip in deph
+devh.pip
 ========================
 
 A tiny, safe wrapper around `pip` to run installs/uninstalls from Python
@@ -72,19 +72,9 @@ import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple, List, Optional, Sequence
-
-try:
-    # Available in Python 3.8+
-    from importlib import metadata as importlib_metadata
-except Exception:  # pragma: no cover
-    import importlib_metadata  # type: ignore
-
-try:
-    from packaging.version import Version, InvalidVersion
-except Exception:  # pragma: no cover
-    Version = None  # type: ignore
-    InvalidVersion = Exception  # type: ignore
+from importlib import metadata as importlib_metadata
+from typing import Any, Dict, List, Optional, Sequence
+from packaging.version import Version, InvalidVersion
 
 
 @dataclass
@@ -436,25 +426,16 @@ class Pip:
                 versions = [v.strip() for v in right.split(",") if v.strip()]
                 break
 
-        # Normalize/sort with packaging if available
-        if Version is not None:
-            parsed = []
-            for v in versions:
-                try:
-                    parsed.append((Version(v), v))
-                except InvalidVersion:
-                    parsed.append((None, v))  # keep at end
-            if not include_prerelease:
-                parsed = [(pv, raw) for (pv, raw) in parsed if (pv is None) or (not getattr(pv, "is_prerelease", False))]
-            parsed.sort(key=lambda t: (t[0] is None, t[0]), reverse=True)  # latest first
-            versions = [raw for (_, raw) in parsed]
-        else:
-            # fallback rough sort
-            import re as _re
-            def key(v: str): return tuple(int(x) for x in _re.findall(r"\d+", v))
-            if not include_prerelease:
-                versions = [v for v in versions if not any(c.isalpha() for c in v)]
-            versions = sorted(versions, key=key, reverse=True)
+        parsed = []
+        for v in versions:
+            try:
+                parsed.append((Version(v), v))
+            except InvalidVersion:
+                parsed.append((Version("0"), v))  # Treat invalid versions as very old for sorting
+        if not include_prerelease:
+            parsed = [(pv, raw) for (pv, raw) in parsed if not pv.is_prerelease]
+        parsed.sort(key=lambda t: t[0], reverse=True)  # latest first
+        versions = [raw for (_, raw) in parsed]
 
         return versions
 
@@ -575,13 +556,6 @@ class Pip:
             ver = self._get_installed_version("pip")
             if not ver:
                 return False
-            if Version is None:
-                # minimal tuple compare
-                def tup(v: str):
-                    import re
-                    nums = re.findall(r"\d+", v)
-                    return tuple(int(x) for x in nums[:3]) or (0,)
-                return tup(ver) >= (22, 0)
             return Version(ver) >= Version("22")
         except Exception:
             return False
@@ -627,17 +601,10 @@ class Pip:
     def _clean_ansi(self, text: str) -> str:
         return re.sub(r"\x1B\[[0-?]*[ -/]*[@-~]", "", text)
 
-def version_tuple(v: str) -> tuple:
-    nums = re.findall(r"\d+", v)
-    return tuple(int(x) for x in nums[:3]) or (0,)
-
 def version_lt(a: str, b: str) -> bool:
-        if Version is None:
-            return version_tuple(a) < version_tuple(b)
-        try:
-            return Version(a) < Version(b)
-        except InvalidVersion:
-            return version_tuple(a) < version_tuple(b)
+    try:
+        return Version(a) < Version(b)
+    except InvalidVersion:
+        return False # Treat invalid versions as not comparable or older
 
-
-__all__ = ["Pip", "RunResult", "version_tuple", "version_lt"]
+__all__ = ["Pip", "RunResult", "version_lt"]
