@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -97,6 +97,7 @@ class ModuleCtx:
     def_by_name: Dict[str, "DefItem"]
     imported: Dict[str, "ImportItem"]                 # alias -> ImportItem
     module_vars_map: Dict[str, VarsItem]              # name -> VarsItem
-    module_var_exprs: Dict[str, Optional[AST]]  
+    module_var_exprs: Dict[str, Optional[AST]]
+    typehints: Dict[str, str] = field(default_factory=dict)
     
     

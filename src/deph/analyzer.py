@@ -131,13 +131,18 @@ class DependencyAnalyzer:
         # Clean up empty entries from the report for clarity
         final_imports = {k: v for k, v in self.required_imports_by_module.items() if v}
         final_vars = {k: v for k, v in self.required_vars_by_module.items() if v}
-
+        
+        all_typehints = {}
+        for ctx in self.module_ctxs.values():
+            all_typehints.update(ctx.typehints)
+            
         entries_report = [{"name": name, "module": module} for (name, module) in entries]
         return AttrDefaultDict(
             entries=entries_report,
             def_items=final_def_items,
             imports=final_imports,
             vars=final_vars,
+            typehints=all_typehints,
             unbound=sorted(self.unbound),
         )
 
@@ -283,11 +288,17 @@ class DependencyAnalyzer:
         """
         module = ctx.module_name
         for name in list(pending):
-            # Special case: Ignore names from the 'typing' module that might be
-            # picked up from type hints but are not real dependencies.
-            # This handles cases like `_GenericAlias` being pulled in.
+            # Special case for names from the 'typing' module.
+            # We store them in `typehints` for potential later use but
+            # prevent them from being treated as regular dependencies unless necessary.
             if name in getattr(ctx.module_obj, "__dict__", {}):
                 obj = getattr(ctx.module_obj, name, None)
+                if getattr(obj, "__module__", "") == "typing" and name in ctx.imported:
+                    imp_item = ctx.imported[name]
+                    original_name = imp_item.names.get(name, name)
+                    ctx.typehints[name] = original_name
+                    pending.discard(name)
+                    continue
             if name in ctx.imported:
                 self.required_imports_by_module[module][name] = ctx.imported[name]
                 pending.discard(name)
