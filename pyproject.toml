@@ -35,7 +35,6 @@ style = "pep440"
 sources = ["src"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["deph"]
 artifacts = ["LICENSE"]
 
 [tool.hatch.build.targets.sdist]
