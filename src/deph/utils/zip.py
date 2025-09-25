@@ -536,6 +536,7 @@ def fetch_files_in_zip(
                     matches.append(entry)
     return matches
 
+
 def fetch_dirs_in_zip(
     zipobj: zipfile.ZipFile,
     dirname: str,
@@ -605,8 +606,6 @@ def fetch_dirs_in_zip(
         if _match(dirpath):
             results.append(_build_dir(dirpath))
     return results
-
-
 
 
 def _copy_zip(zipobj: zipfile.ZipFile, dst_path: str,
@@ -813,6 +812,7 @@ def write_bytesio_to_file(buf: io.BytesIO, path: str) -> None:
     finally:
         buf.seek(pos)
 
+
 def load(path: str | os.PathLike) -> zipfile.ZipFile:
     """
     Opens a zip archive from a file path.
@@ -830,6 +830,7 @@ def load(path: str | os.PathLike) -> zipfile.ZipFile:
         A readable ZipFile object.
     """
     return zipfile.ZipFile(os.fspath(path), 'r')
+
 
 __all__ = ['FileBuffer', 
            'ZippedFile', 
