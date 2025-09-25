@@ -3,7 +3,7 @@ from . import parser
 from .analyzer import DependencyAnalyzer
 from .isolator import Isolator
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 __all__ = [
     "isolate",
