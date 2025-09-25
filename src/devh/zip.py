@@ -203,6 +203,43 @@ class ZippedFile:
         return FileBuffer(name=self.name, buffer=buf)
 
 
+def create_from_dir(zip_path: str | os.PathLike, source_dir: str | os.PathLike,
+                    compression: int = zipfile.ZIP_DEFLATED) -> str:
+    """
+    Create a ZIP archive from the contents of a directory.
+
+    Parameters
+    ----------
+    zip_path : str | os.PathLike
+        The path to the output ZIP file.
+    source_dir : str | os.PathLike
+        The path to the directory whose contents will be zipped.
+    compression : int, optional
+        The compression method to use (default: zipfile.ZIP_DEFLATED).
+
+    Returns
+    -------
+    str
+        The absolute path to the created ZIP file.
+    """
+    zip_path = os.fspath(zip_path)
+    source_dir = os.fspath(source_dir)
+    
+    with zipfile.ZipFile(zip_path, 'w', compression=compression) as zf:
+        for root, dirs, files in os.walk(source_dir):
+            # Add directory entries
+            for d in dirs:
+                full_path = os.path.join(root, d)
+                arcname = os.path.relpath(full_path, source_dir)
+                zf.writestr(arcname + '/', b'') # Explicit directory entry
+            # Add file entries
+            for file in files:
+                full_path = os.path.join(root, file)
+                arcname = os.path.relpath(full_path, source_dir)
+                zf.write(full_path, arcname)
+    return os.path.abspath(zip_path)
+
+
 @dataclass
 class ZippedDir:
     """
@@ -776,11 +813,31 @@ def write_bytesio_to_file(buf: io.BytesIO, path: str) -> None:
     finally:
         buf.seek(pos)
 
+def load(path: str | os.PathLike) -> zipfile.ZipFile:
+    """
+    Opens a zip archive from a file path.
+
+    A convenience wrapper for `zipfile.ZipFile(path, 'r')`.
+
+    Parameters
+    ----------
+    path : str | os.PathLike
+        Path to the zip archive file.
+
+    Returns
+    -------
+    zipfile.ZipFile
+        A readable ZipFile object.
+    """
+    return zipfile.ZipFile(os.fspath(path), 'r')
+
 __all__ = ['FileBuffer', 
            'ZippedFile', 
            'ZippedDir',
            'walk', 
            'bytes_to_zipfile', 
+           'create_from_dir',
+           'load',
            'fetch_files_in_zip',
            'fetch_dirs_in_zip', 
            'to_filename',

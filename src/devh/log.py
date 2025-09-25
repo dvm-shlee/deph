@@ -16,8 +16,7 @@ Key Functions
   `level`, `log_file`, and `use_console` for quick setup, or with a full
   `dictConfig` dictionary for advanced control over formatters, handlers,
   and loggers.
-
-- **log()**
+- **emit()**
   A wrapper that mimics the `print()` function but directs its output to the
   configured logger. It accepts multiple arguments and a `level` keyword
   (e.g., 'info', 'debug', 'warning').
@@ -30,8 +29,7 @@ import logging
 
 # Basic console logging at INFO level
 log.init()
-log.log("This is an info message.")
-
+log.emit("This is an info message.")
 # Debug logging to both console and a file
 log.init(level=logging.DEBUG, log_file="app.log")
 log.log("This is a debug message.", level="debug")
@@ -53,6 +51,19 @@ from pathlib import Path
 from typing import Union, Optional, Dict, Any
 
 
+class _MaxLevelFilter(logging.Filter):
+    """
+    Filters log records to allow only those with a level *below* a certain threshold.
+    e.g., _MaxLevelFilter(logging.WARNING) allows DEBUG and INFO records.
+    """
+
+    def __init__(self, max_level):
+        super().__init__()
+        self.max_level = max_level
+
+    def filter(self, record):
+        return record.levelno < self.max_level
+
 def init(
     config: Optional[Dict[str, Any]] = None,
     level: int = logging.INFO,
@@ -67,6 +78,10 @@ def init(
 
     This function sets up logging based on either a provided dictionary
     configuration or simple parameters for level, console, and file output.
+
+    When `use_console` is True, it sets up two handlers:
+    - One for `stdout` that handles logs below `WARNING` level.
+    - One for `stderr` that handles logs from `WARNING` level and up.
 
     Parameters
     ----------
@@ -102,11 +117,21 @@ def init(
 
     handlers = []
     if use_console:
-        console_handler = logging.StreamHandler(sys.stdout)
-        # Use specific console_level, or fall back to the general level
-        console_handler.setLevel(console_level if console_level is not None else level)
-        console_handler.setFormatter(logging.Formatter("%(message)s"))
-        handlers.append(console_handler)
+        # stdout handler: for levels below WARNING (DEBUG, INFO)
+        stdout_handler = logging.StreamHandler(sys.stdout)
+        stdout_handler.setLevel(console_level if console_level is not None else level)
+        stdout_handler.addFilter(_MaxLevelFilter(logging.WARNING))
+        stdout_handler.setFormatter(logging.Formatter("%(message)s"))
+        handlers.append(stdout_handler)
+
+        # stderr handler: for levels WARNING and above (WARNING, ERROR, CRITICAL)
+        stderr_handler = logging.StreamHandler(sys.stderr)
+        # Ensure the stderr handler is at least at WARNING level
+        stderr_level = max(console_level if console_level is not None else level, logging.WARNING) # type: ignore
+        stderr_handler.setLevel(stderr_level)
+        stderr_handler.setFormatter(
+            logging.Formatter("[%(levelname)-8s] %(message)s"))
+        handlers.append(stderr_handler)
 
     if use_file:
         if not log_file:
@@ -134,7 +159,7 @@ def init(
         logging.warning("logh.init() called with no output configured (console or file).")
 
 
-def log(*args: Any, sep: str = ' ', end: str = '\n', level: str = 'info'):
+def emit(*args: Any, sep: str = ' ', end: str = '\n', level: str = 'info'):
     """
     A flexible logger that acts like `print()` but with logging levels.
 
@@ -161,5 +186,5 @@ def log(*args: Any, sep: str = ' ', end: str = '\n', level: str = 'info'):
     
 __all__ = [
     "init",
-    "log",
+    "emit",
 ]
