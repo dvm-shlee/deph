@@ -44,6 +44,7 @@ log.init(config=my_config)
 log.log("This warning will appear.", level="warning")
 ```
 """
+import inspect
 import logging
 import logging.config
 import sys
@@ -117,12 +118,20 @@ def init(
 
     handlers = []
     if use_console:
-        # stdout handler: for levels below WARNING (DEBUG, INFO)
-        stdout_handler = logging.StreamHandler(sys.stdout)
-        stdout_handler.setLevel(console_level if console_level is not None else level)
-        stdout_handler.addFilter(_MaxLevelFilter(logging.WARNING))
-        stdout_handler.setFormatter(logging.Formatter("%(message)s"))
-        handlers.append(stdout_handler)
+        # stdout handler for INFO
+        info_handler = logging.StreamHandler(sys.stdout)
+        info_handler.setLevel(logging.INFO)
+        info_handler.addFilter(_MaxLevelFilter(logging.WARNING))
+        info_handler.setFormatter(logging.Formatter("%(message)s"))
+        handlers.append(info_handler)
+
+        # stdout handler for DEBUG
+        debug_handler = logging.StreamHandler(sys.stdout)
+        debug_handler.setLevel(logging.DEBUG)
+        debug_handler.addFilter(_MaxLevelFilter(logging.INFO))
+        debug_handler.setFormatter(
+            logging.Formatter("[%(levelname)s] %(message)s"))
+        handlers.append(debug_handler)
 
         # stderr handler: for levels WARNING and above (WARNING, ERROR, CRITICAL)
         stderr_handler = logging.StreamHandler(sys.stderr)
@@ -130,7 +139,7 @@ def init(
         stderr_level = max(console_level if console_level is not None else level, logging.WARNING) # type: ignore
         stderr_handler.setLevel(stderr_level)
         stderr_handler.setFormatter(
-            logging.Formatter("[%(levelname)-8s] %(message)s"))
+            logging.Formatter("[%(levelname)-8s] %(name)s: %(message)s"))
         handlers.append(stderr_handler)
 
     if use_file:
@@ -141,7 +150,7 @@ def init(
         # Use specific file_level, or fall back to the general level
         file_handler.setLevel(file_level if file_level is not None else level)
         file_handler.setFormatter(
-            logging.Formatter("%(asctime)s [%(levelname)-8s] %(message)s")
+            logging.Formatter("%(asctime)s [%(levelname)-8s]  %(name)s: %(message)s")
         )
         handlers.append(file_handler)
 
@@ -180,7 +189,11 @@ def emit(*args: Any, sep: str = ' ', end: str = '\n', level: str = 'info'):
         or 'critical'. Default is 'info'.
     """
     message = sep.join(map(str, args)) + end.rstrip('\n')
-    logger = logging.getLogger()
+    
+    frame = inspect.currentframe()
+    caller_frame = frame.f_back
+    caller_module = caller_frame.f_globals.get("__name__", "__main__")
+    logger = logging.getLogger(caller_module)
     log_func = getattr(logger, level.lower(), logger.info)
     log_func(message)
     
