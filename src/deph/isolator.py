@@ -32,7 +32,6 @@ class Isolator:
         *,
         sort_imports: bool = True,
         keep_dynamic_imports: bool = True,
-        header_comment: bool = True,
     ) -> None:
         """
         Initializes the Isolator.
@@ -50,7 +49,6 @@ class Isolator:
         self._analyzer = analyzer or DependencyAnalyzer()
         self.sort_imports = sort_imports
         self.keep_dynamic_imports = keep_dynamic_imports
-        self.header_comment = header_comment
 
     # --------------------------------------------------------------------------
     # Public API
@@ -123,48 +121,18 @@ class Isolator:
             sections.get("defs", ""),
         ]
         final_code = "\n\n".join(filter(None, ordered_sections))
+        requirements = self._extract_package_requirements(report)
 
-        if self.header_comment:
-            requirements = self._extract_package_requirements(report)
-            header = self._render_header(report, requirements)
-            final_code = f"{header}\n{final_code}"
-
-        return final_code.rstrip() + "\n", warnings
+        return AttrDefaultDict(
+            source = final_code.rstrip() + "\n",
+            reqs_pypi = sorted({item.package_name for item in requirements.get("on_pypi", [])}),
+            reqs_unknown = sorted({item.package_name for item in requirements.get("unknown", [])}),
+            warnings = warnings
+        )
 
     # --------------------------------------------------------------------------
     # Internal Rendering and Collection Logic
     # --------------------------------------------------------------------------
-
-    def _render_header(
-        self, report: AttrDefaultDict, requirements: Dict[str, Any]
-    ) -> str:
-        """
-        Renders the header comment block for the isolated snippet.
-        """
-        entries = report.get("entries", [])
-        entry_labels = ", ".join(
-            f"{e.get('module', '?')}.{e.get('name', '?')}" for e in entries
-        ) or "<none>"
-
-        unbound = sorted({str(x) for x in report.get("unbound", []) if x})
-        warn_line = f"# WARNINGS: Unbound names: {', '.join(unbound)}\n" if unbound else ""
-
-        pypi_reqs = [item.package_name for item in requirements.get("on_pypi", [])]
-        req_line = self._format_pip_install(pypi_reqs)
-
-        unknown_reqs = [item.package_name for item in requirements.get("unknown", [])]
-        unknown_line = f"# Unresolved imports: {', '.join(unknown_reqs)}\n" if unknown_reqs else ""
-
-        return (
-            "# ==================================================\n"
-            "# Auto-generated isolated Python snippet\n"
-            f"# Source entries: {entry_labels}\n"
-            f"# Sections: imports, variables, definitions\n"
-            f"{req_line}"
-            f"{unknown_line}"
-            f"{warn_line}"
-            "# ==================================================\n"
-        )
 
     def _collect_import_lines(
         self, imports_by_module: Dict[str, Dict[str, ImportItem]]
