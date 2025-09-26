@@ -103,7 +103,7 @@ class Isolator:
                     typehint_imports.append(name)
             import_lines.append('from typing import TYPE_CHECKING')
             import_lines.append('if TYPE_CHECKING:')
-            import_lines.append(textwrap.indent(f'from typing import {", ".join(typehint_imports)}'), '    ')
+            import_lines.append(textwrap.indent(f'from typing import {", ".join(typehint_imports)}','    '))
 
         if import_lines:
             sections["imports"] = "\n".join(import_lines)
