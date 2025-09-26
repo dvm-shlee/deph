@@ -54,7 +54,7 @@ class Isolator:
     # Public API
     # --------------------------------------------------------------------------
 
-    def isolate(self, targets: Sequence[Any]) -> Tuple[str, List[str], Dict[str, Any]]:
+    def isolate(self, targets: Sequence[Any]) -> AttrDefaultDict[str, Any]:
         """
         Analyzes targets and renders the isolated source code.
 
@@ -70,10 +70,9 @@ class Isolator:
                   `DependencyAnalyzer`.
         """
         report = self._analyzer.analyze_many(list(targets))
-        code, warnings = self.isolate_from_report(report)
-        return code, warnings, report
-
-    def isolate_from_report(self, report: Dict[str, Any]) -> Tuple[str, List[str]]:
+        return self.isolate_from_report(report)
+        
+    def isolate_from_report(self, report: Dict[str, Any]) -> AttrDefaultDict[str, Any]:
         """
         Renders isolated code from a pre-computed analyzer report.
 
@@ -113,7 +112,8 @@ class Isolator:
             sections["defs"] = "\n\n".join(def_lines)
 
         # 4. Generate Header and Warnings
-        warnings = self._collect_warnings(report.get("unbound", []))
+        unbound = report.get("unbound", [])
+        warnings = self._collect_warnings(unbound)
         # Ensure a consistent output order: imports, then vars, then defs.
         ordered_sections = [
             sections.get("imports", ""),
@@ -127,6 +127,7 @@ class Isolator:
             source = final_code.rstrip() + "\n",
             reqs_pypi = sorted({item.package_name for item in requirements.get("on_pypi", [])}),
             reqs_unknown = sorted({item.package_name for item in requirements.get("unknown", [])}),
+            unbound = unbound,
             warnings = warnings
         )
 

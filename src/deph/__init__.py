@@ -31,8 +31,7 @@ def isolate(*targets):
         The raw analyzer report used to generate the code.
     """
     targets = list(targets)
-    code, _, report = Isolator().isolate(targets)
-    return code, report
+    return Isolator().isolate(targets)
 
 def analyze(*targets):
     """
