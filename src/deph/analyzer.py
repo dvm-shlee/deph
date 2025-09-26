@@ -234,12 +234,6 @@ class DependencyAnalyzer:
 
         self._ensure_buckets_for_ctx(ctx)
 
-        # Always check for and include __future__ imports from the source module
-        # as they affect how type hints are parsed.
-        for alias, imp_item in ctx.imported.items():
-            if imp_item.module == "__future__":
-                self.required_imports_by_module[ctx.module_name][alias] = imp_item
-
         unbound_names = self._extract_unbound_names(d.node)
         self._resolve_pending_names(unbound_names, ctx)
 
