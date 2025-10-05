@@ -74,10 +74,19 @@ class NameUsageCollector(ast.NodeVisitor):
         self.generic_visit(node)
         
     def visit_AnnAssign(self, node: ast.AnnAssign):
-        """Handles annotated assignments, visiting the annotation."""
+        """Handles annotated assignments.
+
+        - Marks simple annotated targets (e.g., `x: T = ...` or `x: T`) as local stores.
+        - Visits the value and annotation to collect any name loads.
+        """
+        # Register the annotated target as a local store when it's a bare name
+        if isinstance(node.target, ast.Name):
+            self.local_stores.add(node.target.id)
+        # Visit value and annotation for dependencies
         if node.value:
             self.visit(node.value)
-        self.visit(node.annotation)
+        if node.annotation:
+            self.visit(node.annotation)
 
     # For nested definitions, only register the name as a local store and do not visit the body.
     def visit_FunctionDef(self, node: ast.FunctionDef):
