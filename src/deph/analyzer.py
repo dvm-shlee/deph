@@ -238,6 +238,26 @@ class DependencyAnalyzer:
         self._ensure_buckets_for_ctx(ctx)
 
         unbound_names = self._extract_unbound_names(d.node)
+
+        # Discount closure-bound names from enclosing function scopes so that
+        # nested defs don't erroneously report outer locals (e.g., `lines`)
+        # as unbound. Walk up the parent chain and collect locals/params.
+        outer_locals: Set[str] = set()
+        pid = self._parent_id_of(d)
+        while pid is not None:
+            parent_ctx = self.ctx_by_node_id.get(pid)
+            if not parent_ctx:
+                break
+            parent_def = parent_ctx.def_by_id.get(pid)
+            if not parent_def:
+                break
+            # Only function scopes contribute closure locals
+            if parent_def.type == "function":
+                outer_locals.update(self._locals_and_params(parent_def.node))
+            pid = self._parent_id_of(parent_def)
+
+        if outer_locals:
+            unbound_names.difference_update(outer_locals)
         self._resolve_pending_names(unbound_names, ctx)
 
         self._resolve_nested_defs(d, ctx)
@@ -544,6 +564,21 @@ class DependencyAnalyzer:
         for n in def_node.body:
             V().visit(n)
         return loads
+
+    @staticmethod
+    def _locals_and_params(def_node: AstDefs) -> Set[str]:
+        """Collects names bound locally within a def/class node and its parameters.
+
+        For classes, this returns at least the class name as a local store due
+        to the visitor behavior, but closure semantics are only applied for
+        function scopes by callers.
+        """
+        coll = NameUsageCollector()
+        if isinstance(def_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            coll.visit_arguments(def_node.args)
+        for n in def_node.body:
+            coll.visit(n)
+        return coll.local_stores | coll.params
 
     @staticmethod
     def _value_kind(expr: Optional[ast.AST]) -> str:
