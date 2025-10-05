@@ -1,6 +1,7 @@
 name: Publish Package
 
 on:
+  # Manual trigger with target selection (TestPyPI/PyPI)
   workflow_dispatch:
     inputs:
       target:
@@ -8,6 +9,9 @@ on:
         type: choice
         options: [testpypi, pypi]
         default: testpypi
+  # Trigger on GitHub Release publish
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -30,12 +34,19 @@ jobs:
     permissions:
       id-token: write
     environment:
-      name: ${{ github.event.inputs.target }}
+      name: ${{ inputs.target || 'pypi' }}
     steps:
       - uses: actions/download-artifact@v4
         with: { name: dist-artifacts, path: dist/ }
-      - name: Publish
+      - name: Publish to TestPyPI
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
-          repository-url: ${{ github.event.inputs.target == 'testpypi' && 'https://test.pypi.org/legacy/' || '' }}
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.target != 'testpypi' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
