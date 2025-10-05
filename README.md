@@ -88,6 +88,7 @@ print(report.get("imports"))
 # - result.reqs_unknown (non-stdlib, not resolvable on PyPI)
 
 ```
+This will produce a self-contained script with `train_model`, `preprocess`, and the necessary `import pandas as pd` statement, along with a detailed dependency report.
 
 ## Utilities (Optional)
 
@@ -96,6 +97,3 @@ print(report.get("imports"))
 - `deph.utils.log`: simple console/file logging configuration
 - `deph.utils.zip`: ZIP archive helpers
 - `deph.utils.pip`: a thin wrapper around `pip`
-```
-
-This will produce a self-contained script with `train_model`, `preprocess`, and the necessary `import pandas as pd` statement, along with a detailed dependency report.
