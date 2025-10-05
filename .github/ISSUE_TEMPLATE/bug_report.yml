@@ -1,0 +1,72 @@
+name: Bug report
+description: Report a problem or unexpected behavior in deph
+title: "[Bug]: "
+labels: [bug]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug! Please include as much detail as possible to help us reproduce the issue.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-checks
+      options:
+        - label: I’m using the latest release of deph
+          required: false
+        - label: I searched existing issues and didn’t find a match
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: What happened, and what did you expect to happen?
+      placeholder: Clear and concise description of the problem
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal Reproduction
+      description: Provide the smallest code/notebook steps to reproduce the issue.
+      render: shell
+      placeholder: |
+        1. Steps to reproduce (code, CLI, or Jupyter steps)
+        2. What you observed
+        3. What you expected instead
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs/Traceback
+      description: Paste relevant logs, error messages, or stack traces.
+      render: text
+
+  - type: input
+    id: version
+    attributes:
+      label: deph version
+      placeholder: e.g., 0.1.0
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: e.g., 3.11.7
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: e.g., Ubuntu 22.04, macOS 14, Windows 11
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else we should know?
+
