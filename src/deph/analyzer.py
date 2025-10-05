@@ -525,7 +525,12 @@ class DependencyAnalyzer:
         for n in def_node.body:
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 nested_unbound.update(DependencyAnalyzer._extract_unbound_names(n))
-        
+
+        # Only propagate nested unbound names that are not locally bound
+        # in this definition (i.e., exclude variables defined as locals/params here).
+        outer_locals = coll.local_stores | coll.params
+        nested_unbound = {n for n in nested_unbound if n not in outer_locals}
+
         return parent_unbound | nested_unbound
 
     @staticmethod
