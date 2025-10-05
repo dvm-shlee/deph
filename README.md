@@ -1,6 +1,9 @@
 # deph: Isolate, Analyze, and Compose Your Python Code
 
 [![PyPI version](https://badge.fury.io/py/deph.svg)](https://badge.fury.io/py/deph) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Tests](https://github.com/OWNER/REPO/actions/workflows/python-test.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/python-test.yml) ![Python Versions](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)
+
+<!-- Replace OWNER/REPO above with your GitHub org/user and repository name -->
 
 `deph` is a developer utility designed to untangle Python codebases. It traces and isolates all the necessary source code for a specific function or class (an "endpoint"), analyzes its dependencies, and then composes the code into a clean, self-contained module.
 
@@ -11,7 +14,7 @@ This is especially powerful for code developed in interactive environments like 
 -   **Endpoint-based Code Isolation**: Pinpoint a function or class, and `deph` will recursively find all internal dependencies (other functions, classes, global variables) required for it to run.
 -   **Dependency Analysis**: Automatically identifies the standard library, third-party, and local modules your isolated code depends on.
 -   **Source Code Composition**: Gathers all the required source code and assembles it into a single, clean Python module, ready for use in a new context.
--   **Jupyter-Aware**: Intelligently parses the structure of Jupyter Notebooks (`.ipynb` files), treating them as valid source entry points.
+-   **Jupyter-Aware**: Works inside Jupyter Notebook/Lab by analyzing the live Python session (in-memory functions, classes, variables, and imports).
 
 ## Why Use `deph`? (The Problem)
 
