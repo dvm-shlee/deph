@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "deph"
+dynamic = ["version"]
+description = "A developer utility to isolate, analyze, and compose Python code dependencies."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "SungHo Lee", email = "shlee@unc.edu" }]
+maintainers = [{ name = "SungHo Lee", email = "shlee@unc.edu" }]
+keywords = ["dependency", "analysis", "isolation", "ast", "import"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Development Status :: 5 - Production/Stable",
+  "License :: OSI Approved :: MIT License",
+  "Intended Audience :: Developers",
+  "Topic :: Software Development",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Utilities",
+  "Framework :: Jupyter",
+]
+requires-python = ">=3.9"
+dependencies = [
+  "packaging",
+  "requests>=2.31",
+]
+
+[project.optional-dependencies]
+# Install with: `pip install .[test]`
+test = [
+  "numpy>=1.21",
+]
+
+[project.urls]
+Homepage = "https://github.com/dvm-shlee/deph"
+
+[tool.hatch.version]
+path = "src/deph/__init__.py"
+style = "pep440"
+
+[tool.hatch.build]
+sources = ["src"]
+
+[tool.hatch.build.targets.wheel]
+artifacts = ["LICENSE"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "LICENSE", "README.md", "tests"]
+
+[tool.pytest.ini_options]
+log_cli = true
+log_cli_level = "DEBUG"
