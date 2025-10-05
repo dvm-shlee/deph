@@ -128,13 +128,10 @@ class Isolator:
         final_code = "\n\n".join(filter(None, ordered_sections))
         requirements = self._extract_package_requirements(report)
 
-        reqs_pypi = {item.package_name for item in requirements.get("on_pypi", [])},
-        reqs_unknown = {item.package_name for item in requirements.get("unknown", [])},
-
         return AttrDefaultDict(
             source = final_code.rstrip() + "\n",
-            reqs_pypi = sorted(reqs_pypi),
-            reqs_unknown = sorted(reqs_unknown),
+            reqs_pypi = {item.package_name for item in requirements.get("on_pypi", [])},
+            reqs_unknown = {item.package_name for item in requirements.get("unknown", [])},
             unbound = unbound,
             warnings = warnings
         )
