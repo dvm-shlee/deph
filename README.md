@@ -1,7 +1,7 @@
 # deph: Isolate, Analyze, and Compose Your Python Code
 
 [![PyPI version](https://badge.fury.io/py/deph.svg)](https://badge.fury.io/py/deph) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://github.com/OWNER/REPO/actions/workflows/python-test.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/python-test.yml) ![Python Versions](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)
+[![Tests](https://github.com/dvm-shlee/deph/actions/workflows/python-test.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/python-test.yml) ![Python Versions](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)
 
 <!-- Replace OWNER/REPO above with your GitHub org/user and repository name -->
 
