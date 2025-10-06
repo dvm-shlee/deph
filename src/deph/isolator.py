@@ -130,8 +130,8 @@ class Isolator:
 
         return AttrDefaultDict(
             source = final_code.rstrip() + "\n",
-            reqs_pypi = {item.package_name for item in requirements.get("on_pypi", [])},
-            reqs_unknown = {item.package_name for item in requirements.get("unknown", [])},
+            reqs_pypi = {item.package_name:item.module for item in requirements.get("on_pypi", [])},
+            reqs_unknown = {item.package_name:item.module for item in requirements.get("unknown", [])},
             unbound = unbound,
             warnings = warnings
         )
